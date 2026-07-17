@@ -4,9 +4,12 @@
 // porque a sessão WhatsApp Web exige WebSocket persistente — incompatível com
 // Cloud Run/serverless (ver docs/estudo-viabilidade-mcp-whatsapp.md).
 //
-// Uma ferramenta só: enviar_mensagem_whatsapp(texto). O destinatário é FIXO
-// (env WHATSAPP_DESTINO), não é parâmetro da ferramenta — evita que uma
-// alucinação do modelo mande mensagem pro número errado.
+// Ferramentas:
+//   • enviar_mensagem_whatsapp(texto) — envia E confirma a entrega (recibo). O
+//     destinatário é FIXO (env WHATSAPP_DESTINO), não é parâmetro — evita o modelo
+//     mandar pro número errado.
+//   • verificar_status_envio(id) — reconfere a entrega de um envio anterior.
+//   • verificar_status_conexao() — observabilidade: o canal está online?
 // ─────────────────────────────────────────────────────────────────────────────
 
 import express from 'express';
@@ -35,6 +38,44 @@ let sock = null;
 let connectionStatus = 'iniciando';
 let reconnecting = false; // impede reconexões sobrepostas (martelo → 405)
 const RECONNECT_DELAY_MS = 5000;
+const ACK_WAIT_MS = 7000;  // quanto o envio espera pelo recibo de entrega antes de responder
+
+// ── Observabilidade + confirmação de entrega ────────────────────────────────
+// O WhatsApp emite recibos por mensagem (enviado→entregue→lido). O Baileys expõe
+// isso em 'messages.update' com update.status numérico (enum WebMessageInfo.Status).
+// Rastreamos o status de cada envio para o orquestrador saber se o alerta CHEGOU.
+const startedAt = Date.now();
+let conectadoDesde = null;
+let ultimaEntregaOkAt = null;
+
+const STATUS_LABEL = { 0: 'erro', 1: 'pendente', 2: 'enviado_ao_servidor', 3: 'entregue', 4: 'lido', 5: 'reproduzido' };
+const MAX_TRACK = 300;
+const enviosStatus = new Map(); // id -> { statusNum, status, at, preview, jid }
+const ackWaiters = new Map();   // id -> [cb,...] chamados quando entregue/lido
+
+function registrarStatus(id, statusNum, extra = {}) {
+  if (!id) return;
+  const prev = enviosStatus.get(id) ?? {};
+  const finalNum = Math.max(prev.statusNum ?? 0, statusNum); // nunca regride (entregue não volta a pendente)
+  enviosStatus.set(id, { ...prev, ...extra, statusNum: finalNum, status: STATUS_LABEL[finalNum] ?? `desconhecido(${finalNum})`, at: Date.now() });
+  if (enviosStatus.size > MAX_TRACK) enviosStatus.delete(enviosStatus.keys().next().value); // buffer dos últimos N
+  if (finalNum >= 3) {
+    ultimaEntregaOkAt = Date.now();
+    const cbs = ackWaiters.get(id);
+    if (cbs) { cbs.forEach((cb) => cb()); ackWaiters.delete(id); }
+  }
+}
+
+function statusConexao() {
+  return {
+    whatsapp: connectionStatus,
+    online: connectionStatus === 'conectado',
+    conectado_desde: conectadoDesde ? new Date(conectadoDesde).toISOString() : null,
+    uptime_processo_s: Math.round((Date.now() - startedAt) / 1000),
+    ultima_entrega_confirmada: ultimaEntregaOkAt ? new Date(ultimaEntregaOkAt).toISOString() : null,
+    envios_rastreados: enviosStatus.size,
+  };
+}
 
 async function startBaileys() {
   // Encerra o socket anterior e seus listeners antes de criar um novo — sem isso,
@@ -53,6 +94,14 @@ async function startBaileys() {
 
   sock.ev.on('creds.update', saveCreds);
 
+  // Recibos de entrega/leitura → atualiza o rastreio de status de cada envio.
+  sock.ev.on('messages.update', (updates) => {
+    for (const u of updates) {
+      const st = u?.update?.status;
+      if (u?.key?.id && typeof st === 'number') registrarStatus(u.key.id, st);
+    }
+  });
+
   sock.ev.on('connection.update', (update) => {
     const { connection, lastDisconnect, qr } = update;
 
@@ -64,10 +113,12 @@ async function startBaileys() {
 
     if (connection === 'open') {
       connectionStatus = 'conectado';
+      conectadoDesde = Date.now();
       console.log('WhatsApp conectado.');
     }
 
     if (connection === 'close') {
+      conectadoDesde = null;
       const statusCode = lastDisconnect?.error?.output?.statusCode;
       // Log completo do erro — para diagnosticar 405 (versão velha vs bloqueio de
       // IP de datacenter). Um 405 persistente mesmo com pacote/versão atuais indica
@@ -108,8 +159,26 @@ async function enviarMensagem(texto) {
   } catch (e) {
     console.log(`AVISO: onWhatsApp falhou (${e.message}) — tentando JID cru ${jid}.`);
   }
-  console.log(`Enviando para JID: ${jid} (número informado: ${numero})`);
-  await sock.sendMessage(jid, { text: texto });
+  const sent = await sock.sendMessage(jid, { text: texto });
+  const id = sent?.key?.id ?? null;
+  console.log(`Enviado id=${id} para JID=${jid}`);
+  if (id) registrarStatus(id, 2, { preview: texto.slice(0, 80), jid });
+
+  // Espera curta pelo recibo de ENTREGA (delivery ack) — confirma que chegou no
+  // aparelho do destinatário, não só que o servidor aceitou. Se o destino estiver
+  // offline, retorna entregue=false (fica em enviado_ao_servidor) e o orquestrador
+  // decide reenviar/logar. O ack de entrega independe de recibos de leitura estarem ativos.
+  let entregue = false;
+  if (id) {
+    entregue = await new Promise((resolve) => {
+      if ((enviosStatus.get(id)?.statusNum ?? 0) >= 3) return resolve(true);
+      const timer = setTimeout(() => resolve((enviosStatus.get(id)?.statusNum ?? 0) >= 3), ACK_WAIT_MS);
+      const arr = ackWaiters.get(id) ?? [];
+      arr.push(() => { clearTimeout(timer); resolve(true); });
+      ackWaiters.set(id, arr);
+    });
+  }
+  return { id, status: enviosStatus.get(id)?.status ?? 'enviado_ao_servidor', entregue };
 }
 
 // ── MCP — mesmo padrão stateless usado no OpLab/Cockpit: server+transport novos
@@ -121,27 +190,59 @@ function buildMcpServer() {
     tools: [
       {
         name: 'enviar_mensagem_whatsapp',
-        description: 'Envia uma mensagem de texto para o WhatsApp pessoal do operador (destinatário fixo, configurado no servidor — não é parâmetro). Use para alertas (ex: risco de carteira, limite de delta cruzado).',
+        description: 'Envia uma mensagem de texto para o WhatsApp do operador (destinatário fixo no servidor — não é parâmetro). Use para alertas. CONFIRMA A ENTREGA: espera o recibo de entrega e retorna JSON com "entregue" (true/false), "status" e "id". Se entregue=false, a mensagem chegou ao servidor mas ainda não ao aparelho (destinatário offline) — reenvie ou logue, e/ou use verificar_status_envio com o id.',
         inputSchema: {
           type: 'object',
           properties: { texto: { type: 'string', description: 'Texto da mensagem a enviar.' } },
           required: ['texto'],
         },
       },
+      {
+        name: 'verificar_status_envio',
+        description: 'Consulta o status de entrega de uma mensagem já enviada, pelo "id" retornado por enviar_mensagem_whatsapp. Retorna se foi entregue/lido. Útil para reconferir depois, quando o destinatário estava offline no momento do envio.',
+        inputSchema: {
+          type: 'object',
+          properties: { id: { type: 'string', description: 'O id da mensagem (campo "id" do retorno de enviar_mensagem_whatsapp).' } },
+          required: ['id'],
+        },
+      },
+      {
+        name: 'verificar_status_conexao',
+        description: 'Observabilidade do canal WhatsApp: diz se a sessão está ONLINE e pronta para enviar, desde quando está conectada, uptime e a última entrega confirmada. Use ANTES de disparar um alerta crítico para saber se o canal está funcionando.',
+        inputSchema: { type: 'object', properties: {} },
+      },
     ],
   }));
 
   srv.setRequestHandler(CallToolRequestSchema, async (request) => {
-    if (request.params.name !== 'enviar_mensagem_whatsapp') {
-      throw new Error(`Ferramenta desconhecida: ${request.params.name}`);
-    }
-    const texto = String(request.params.arguments?.texto ?? '').trim();
-    if (!texto) throw new Error("Parâmetro 'texto' é obrigatório.");
+    const nome = request.params.name;
+    const args = request.params.arguments ?? {};
+    const json = (obj, isError = false) => ({ content: [{ type: 'text', text: JSON.stringify(obj, null, 2) }], isError });
     try {
-      await enviarMensagem(texto);
-      return { content: [{ type: 'text', text: 'Mensagem enviada com sucesso.' }] };
+      if (nome === 'enviar_mensagem_whatsapp') {
+        const texto = String(args.texto ?? '').trim();
+        if (!texto) throw new Error("Parâmetro 'texto' é obrigatório.");
+        const r = await enviarMensagem(texto);
+        return json({
+          resultado: r.entregue
+            ? 'ENTREGUE no aparelho do destinatário.'
+            : 'Enviado ao servidor, mas NÃO confirmado como entregue (destinatário pode estar offline). Reenvie/logue, ou reconfira depois com verificar_status_envio.',
+          entregue: r.entregue, status: r.status, id: r.id,
+        });
+      }
+      if (nome === 'verificar_status_envio') {
+        const id = String(args.id ?? '').trim();
+        if (!id) throw new Error("Parâmetro 'id' é obrigatório.");
+        const rec = enviosStatus.get(id);
+        if (!rec) return json({ id, encontrado: false, obs: 'id não rastreado (pode ter saído do buffer dos últimos 300, ou id inválido).' });
+        return json({ id, encontrado: true, status: rec.status, entregue: rec.statusNum >= 3, lido: rec.statusNum >= 4, quando: new Date(rec.at).toISOString(), preview: rec.preview });
+      }
+      if (nome === 'verificar_status_conexao') {
+        return json(statusConexao());
+      }
+      throw new Error(`Ferramenta desconhecida: ${nome}`);
     } catch (e) {
-      return { content: [{ type: 'text', text: `Erro ao enviar: ${e.message}` }], isError: true };
+      return json({ erro: e.message }, true);
     }
   });
 
@@ -152,8 +253,9 @@ function buildMcpServer() {
 const app = express();
 app.use(express.json());
 
-// /health é público de propósito (monitoramento simples via curl, sem segredo).
-app.get('/health', (_req, res) => res.json({ status: 'ok', whatsapp: connectionStatus }));
+// /health é público de propósito (monitor externo via curl, sem segredo). Inclui a
+// observabilidade completa do canal para uptime checks saberem se está entregando.
+app.get('/health', (_req, res) => res.json({ status: 'ok', ...statusConexao() }));
 
 async function handleMcp(req, res) {
   const server = buildMcpServer();
