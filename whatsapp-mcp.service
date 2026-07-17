@@ -1,0 +1,19 @@
+[Unit]
+Description=WhatsApp MCP (Baileys)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=whatsapp-mcp
+Group=whatsapp-mcp
+WorkingDirectory=/opt/whatsapp-mcp
+EnvironmentFile=/etc/systemd/system/whatsapp-mcp.env
+ExecStart=/usr/bin/node /opt/whatsapp-mcp/index.js
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
