@@ -12,7 +12,7 @@
 import express from 'express';
 import pino from 'pino';
 import qrcodeTerminal from 'qrcode-terminal';
-import makeWASocket, { useMultiFileAuthState, DisconnectReason } from '@whiskeysockets/baileys';
+import makeWASocket, { useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion, Browsers } from '@whiskeysockets/baileys';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
@@ -33,10 +33,23 @@ const logger = pino({ level: process.env.LOG_LEVEL ?? 'warn' });
 // connection.update e decidir com base no DisconnectReason. ─────────────────
 let sock = null;
 let connectionStatus = 'iniciando';
+let reconnecting = false; // impede reconexões sobrepostas (martelo → 405)
+const RECONNECT_DELAY_MS = 5000;
 
 async function startBaileys() {
+  // Encerra o socket anterior e seus listeners antes de criar um novo — sem isso,
+  // eventos 'close' de sockets antigos disparam reconexões duplicadas (loop 405).
+  if (sock) { try { sock.ev.removeAllListeners(); sock.ws?.close(); } catch { /* já morto */ } }
+  reconnecting = false;
+
   const { state, saveCreds } = await useMultiFileAuthState(AUTH_DIR);
-  sock = makeWASocket({ auth: state, logger, printQRInTerminal: false });
+  // Busca a versão ATUAL do WhatsApp Web. Sem isso, o Baileys usa uma versão
+  // embutida que pode estar velha → o WhatsApp rejeita o handshake com 405 e
+  // NUNCA emite o QR. Esta é a causa nº1 do loop 405.
+  const { version } = await fetchLatestBaileysVersion();
+  console.log(`Baileys usando WhatsApp Web v${version.join('.')}`);
+
+  sock = makeWASocket({ version, auth: state, logger, browser: Browsers.ubuntu('Chrome') });
 
   sock.ev.on('creds.update', saveCreds);
 
@@ -57,9 +70,16 @@ async function startBaileys() {
     if (connection === 'close') {
       const statusCode = lastDisconnect?.error?.output?.statusCode;
       const deslogado = statusCode === DisconnectReason.loggedOut;
-      connectionStatus = deslogado ? 'deslogado_precisa_novo_qr' : 'reconectando';
-      console.log(`Conexão fechada (statusCode=${statusCode}). ${deslogado ? 'Sessão encerrada — reinicie o serviço para gerar novo QR.' : 'Reconectando...'}`);
-      if (!deslogado) startBaileys(); // reconecta, exceto se foi logout explícito (precisa de novo QR manual)
+      if (deslogado) {
+        connectionStatus = 'deslogado_precisa_novo_qr';
+        console.log(`Sessão encerrada (logout). Reinicie o serviço para gerar novo QR.`);
+        return;
+      }
+      connectionStatus = 'reconectando';
+      if (reconnecting) return; // já há uma reconexão agendada
+      reconnecting = true;
+      console.log(`Conexão fechada (statusCode=${statusCode}). Reconectando em ${RECONNECT_DELAY_MS / 1000}s...`);
+      setTimeout(() => { startBaileys().catch((e) => console.error('Falha ao reconectar:', e)); }, RECONNECT_DELAY_MS);
     }
   });
 }
