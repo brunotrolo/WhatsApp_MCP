@@ -12,15 +12,38 @@ sem Postgres, sem Redis), rodando numa VM Compute Engine `e2-micro` sempre ligad
 > (`docs/estudo-viabilidade-mcp-whatsapp.md` e `docs/whatsapp-mcp-arquitetura.md`).
 
 ## Ferramentas
+
+Toda ferramenta de **envio confirma a entrega** (espera o recibo do WhatsApp) e retorna
+`{ entregue, status, id }`. Status: `pendente → enviado_ao_servidor → entregue → lido`. O ack
+de **entrega** independe de recibos de leitura; o `lido` é best-effort. `GET /health` expõe a
+mesma observabilidade (uptime check externo).
+
+### Recomendadas (sempre ligadas)
 | Ferramenta | O que faz |
 |---|---|
-| `enviar_mensagem_whatsapp(texto)` | Envia e **espera o recibo de entrega**. Retorna JSON `{ entregue, status, id }`. Se `entregue=false`, chegou ao servidor mas não ao aparelho (destinatário offline) → o orquestrador reenvia/loga. |
-| `verificar_status_envio(id)` | Reconfere a entrega/leitura de um envio anterior pelo `id` (útil quando o destino estava offline no momento do envio). |
-| `verificar_status_conexao()` | Observabilidade: canal online? desde quando? uptime? última entrega confirmada? Use **antes** de um alerta crítico. |
+| `enviar_mensagem_whatsapp(texto)` | Texto (aceita markdown do WhatsApp: `*negrito*`, `_itálico_`, ` ```mono``` `). |
+| `enviar_imagem_whatsapp(url\|base64, legenda?)` | Imagem — gráficos de payoff/curva de capital/IV Rank/print do cockpit. |
+| `enviar_documento_whatsapp(url\|base64, nome_arquivo, legenda?)` | PDF/CSV/XLSX — relatórios, auditoria, posições. |
+| `ler_mensagens_recebidas(limite?)` | **Two-way:** lê as mensagens recebidas pelo robô (o operador comanda pelo WhatsApp; o assistente lê e age). |
+| `verificar_status_envio(id)` | Reconfere entrega/leitura de um envio anterior. |
+| `verificar_status_conexao()` | Observabilidade do canal (online? desde quando? última entrega OK?). |
 
-Status possíveis: `pendente` → `enviado_ao_servidor` → `entregue` → `lido`. O ack de
-**entrega** independe de o destinatário ter recibos de leitura ativos; o `lido` é best-effort.
-`GET /health` expõe a mesma observabilidade para monitores externos (uptime checks).
+### Extras (desligadas por padrão — atrás de `HABILITAR_FERRAMENTAS_EXTRAS`)
+Implementadas para exploração futura; só aparecem/funcionam com `HABILITAR_FERRAMENTAS_EXTRAS=true`:
+`enviar_audio_whatsapp`, `enviar_video_whatsapp`, `enviar_sticker_whatsapp`,
+`responder_mensagem_whatsapp` (reply/quote), `editar_mensagem_whatsapp`,
+`apagar_mensagem_whatsapp`, `reagir_mensagem_whatsapp`, `marcar_como_lida_whatsapp`,
+`enviar_presenca_whatsapp` (digitando/gravando).
+
+**Para autorizar os extras** (na VM):
+```bash
+echo 'HABILITAR_FERRAMENTAS_EXTRAS=true' | sudo tee -a /etc/systemd/system/whatsapp-mcp.env
+sudo systemctl restart whatsapp-mcp
+```
+(abra uma conversa nova no claude.ai para as novas ferramentas aparecerem).
+
+> ⚠️ Cada capacidade "bot-like" a mais aumenta o risco de banimento da conexão não-oficial.
+> Para um canal pessoal de alertas, mantenha só o necessário ligado.
 
 ## Dois números, dois papéis
 - **Remetente (robô):** número que escaneia o QR e mantém a sessão. Use um número
@@ -46,6 +69,7 @@ repositório é publicado automaticamente por esse script.
 | `MCP_API_KEY` | Chave exigida em `/mcp` (header) e `/mcp/:key` (path). Gerada no deploy. |
 | `WHATSAPP_DESTINO` | Número de destino, só dígitos ou JID (`5511999999999` ou `...@s.whatsapp.net`). O código resolve o JID canônico via `onWhatsApp()` (trata o "9º dígito" do Brasil). |
 | `PORT` | Porta interna do Node (padrão 8080; Caddy faz o HTTPS na frente). |
+| `HABILITAR_FERRAMENTAS_EXTRAS` | `true` liga as ferramentas extras (áudio, vídeo, sticker, editar, apagar, reagir, responder, marcar_lida, presença). Padrão: desligado. |
 
 ## Pareamento (1ª vez / após logout)
 ```bash

@@ -74,8 +74,19 @@ function statusConexao() {
     uptime_processo_s: Math.round((Date.now() - startedAt) / 1000),
     ultima_entrega_confirmada: ultimaEntregaOkAt ? new Date(ultimaEntregaOkAt).toISOString() : null,
     envios_rastreados: enviosStatus.size,
+    ferramentas_extras_habilitadas: EXTRAS_ON,
   };
 }
+
+// Portão de autorização: as ferramentas "extras" (áudio, vídeo, sticker, editar,
+// apagar, reagir, responder, marcar_lida, presença) só aparecem/funcionam com
+// HABILITAR_FERRAMENTAS_EXTRAS=true. As recomendadas ficam sempre ligadas.
+const EXTRAS_ON = process.env.HABILITAR_FERRAMENTAS_EXTRAS === 'true';
+
+// Buffer de mensagens RECEBIDAS (two-way) — últimas N mensagens de texto que
+// chegaram ao número-robô, para ler_mensagens_recebidas. Memória volátil.
+const MAX_INBOX = 50;
+const inbox = []; // { from, texto, at, id, key, quotedRef }
 
 async function startBaileys() {
   // Encerra o socket anterior e seus listeners antes de criar um novo — sem isso,
@@ -99,6 +110,18 @@ async function startBaileys() {
     for (const u of updates) {
       const st = u?.update?.status;
       if (u?.key?.id && typeof st === 'number') registrarStatus(u.key.id, st);
+    }
+  });
+
+  // Mensagens RECEBIDAS (two-way) → buffer para ler_mensagens_recebidas.
+  sock.ev.on('messages.upsert', ({ messages, type }) => {
+    if (type !== 'notify') return;
+    for (const m of messages) {
+      if (m.key?.fromMe) continue;
+      const texto = m.message?.conversation ?? m.message?.extendedTextMessage?.text;
+      if (!texto) continue; // só texto por ora (mídia recebida fica de fora)
+      inbox.push({ from: m.key.remoteJid, texto, at: Date.now(), id: m.key.id, key: m.key, quotedRef: { key: m.key, message: m.message } });
+      if (inbox.length > MAX_INBOX) inbox.shift();
     }
   });
 
@@ -139,108 +162,219 @@ async function startBaileys() {
   });
 }
 
-// ── Envio ────────────────────────────────────────────────────────────────────
-async function enviarMensagem(texto) {
+// ── Helpers de envio (compartilhados por todas as ferramentas de envio) ───────
+function precisaConectado() {
   if (!sock || connectionStatus !== 'conectado') {
     throw new Error(`WhatsApp não está conectado (status atual: ${connectionStatus}). Verifique a sessão na VM.`);
   }
+}
+
+// Resolve o JID canônico do destino via onWhatsApp — ESSENCIAL no Brasil (9º dígito).
+async function destinoJid() {
   const numero = WHATSAPP_DESTINO.replace(/@.*/, '').replace(/\D/g, '');
-  // Resolve o JID canônico via onWhatsApp — ESSENCIAL no Brasil: o "9º dígito" faz
-  // o número digitado (5511976765644) divergir do JID que o WhatsApp reconhece (às
-  // vezes 551176765644). Sem isso, o envio "tem sucesso" mas NÃO é entregue.
   let jid = `${numero}@s.whatsapp.net`;
   try {
     const [info] = await sock.onWhatsApp(numero);
-    if (info?.exists && info.jid) {
-      jid = info.jid;
-    } else {
-      console.log(`AVISO: onWhatsApp não confirmou ${numero} — tentando JID cru ${jid}.`);
-    }
+    if (info?.exists && info.jid) jid = info.jid;
+    else console.log(`AVISO: onWhatsApp não confirmou ${numero} — usando JID cru ${jid}.`);
   } catch (e) {
-    console.log(`AVISO: onWhatsApp falhou (${e.message}) — tentando JID cru ${jid}.`);
+    console.log(`AVISO: onWhatsApp falhou (${e.message}) — usando JID cru ${jid}.`);
   }
-  const sent = await sock.sendMessage(jid, { text: texto });
+  return jid;
+}
+
+function esperarAck(id) {
+  return new Promise((resolve) => {
+    if ((enviosStatus.get(id)?.statusNum ?? 0) >= 3) return resolve(true);
+    const timer = setTimeout(() => resolve((enviosStatus.get(id)?.statusNum ?? 0) >= 3), ACK_WAIT_MS);
+    const arr = ackWaiters.get(id) ?? [];
+    arr.push(() => { clearTimeout(timer); resolve(true); });
+    ackWaiters.set(id, arr);
+  });
+}
+
+// Envia um `content` Baileys (texto, imagem, documento, etc.) para o destino fixo,
+// rastreia o id e espera o recibo de entrega. Retorna { id, status, entregue }.
+async function enviarConteudo(content, preview, options = {}) {
+  precisaConectado();
+  const jid = await destinoJid();
+  const sent = await sock.sendMessage(jid, content, options);
   const id = sent?.key?.id ?? null;
   console.log(`Enviado id=${id} para JID=${jid}`);
-  if (id) registrarStatus(id, 2, { preview: texto.slice(0, 80), jid });
-
-  // Espera curta pelo recibo de ENTREGA (delivery ack) — confirma que chegou no
-  // aparelho do destinatário, não só que o servidor aceitou. Se o destino estiver
-  // offline, retorna entregue=false (fica em enviado_ao_servidor) e o orquestrador
-  // decide reenviar/logar. O ack de entrega independe de recibos de leitura estarem ativos.
-  let entregue = false;
-  if (id) {
-    entregue = await new Promise((resolve) => {
-      if ((enviosStatus.get(id)?.statusNum ?? 0) >= 3) return resolve(true);
-      const timer = setTimeout(() => resolve((enviosStatus.get(id)?.statusNum ?? 0) >= 3), ACK_WAIT_MS);
-      const arr = ackWaiters.get(id) ?? [];
-      arr.push(() => { clearTimeout(timer); resolve(true); });
-      ackWaiters.set(id, arr);
-    });
-  }
+  if (id) registrarStatus(id, 2, { preview: String(preview ?? '').slice(0, 80), jid });
+  const entregue = id ? await esperarAck(id) : false;
   return { id, status: enviosStatus.get(id)?.status ?? 'enviado_ao_servidor', entregue };
 }
+
+// Baixa mídia de base64 (data URI ou puro) ou de uma URL pública → Buffer.
+async function midiaBuffer(a) {
+  if (a.base64) return Buffer.from(String(a.base64).replace(/^data:[^;]+;base64,/, ''), 'base64');
+  if (a.url) {
+    const r = await fetch(String(a.url));
+    if (!r.ok) throw new Error(`falha ao baixar a URL (HTTP ${r.status})`);
+    return Buffer.from(await r.arrayBuffer());
+  }
+  throw new Error("forneça 'base64' (conteúdo) ou 'url' (link público) da mídia.");
+}
+
+function mimeFromName(nome = '') {
+  const ext = String(nome).toLowerCase().split('.').pop();
+  return ({ pdf: 'application/pdf', csv: 'text/csv', txt: 'text/plain', json: 'application/json',
+    xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', xls: 'application/vnd.ms-excel',
+    png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', zip: 'application/zip',
+    mp3: 'audio/mpeg', ogg: 'audio/ogg', mp4: 'video/mp4' }[ext]) ?? 'application/octet-stream';
+}
+
+function respEnvio(r, tipo = 'Mensagem') {
+  return {
+    resultado: r.entregue
+      ? `${tipo} ENTREGUE no aparelho do destinatário.`
+      : `${tipo} enviada ao servidor, mas NÃO confirmada como entregue (destino pode estar offline). Reenvie/logue, ou reconfira com verificar_status_envio.`,
+    entregue: r.entregue, status: r.status, id: r.id,
+  };
+}
+
+function keyEnviada(id) { const rec = enviosStatus.get(id); return rec?.jid ? { remoteJid: rec.jid, fromMe: true, id } : null; }
+function entradaRecebida(id) { return inbox.find((e) => e.id === id); }
+
+// ── Registro de ferramentas ───────────────────────────────────────────────────
+// extra:false = recomendada (sempre ligada). extra:true = fica atrás do portão
+// HABILITAR_FERRAMENTAS_EXTRAS (desligada por padrão; implementada para exploração).
+const MIDIA_PROPS = { url: { type: 'string', description: 'URL pública da mídia (alternativa a base64).' }, base64: { type: 'string', description: 'Conteúdo em base64 (alternativa a url).' } };
+
+const TOOLS = [
+  // ── Recomendadas ──
+  {
+    name: 'enviar_mensagem_whatsapp', extra: false,
+    description: 'Envia TEXTO para o WhatsApp do operador (destino fixo no servidor). CONFIRMA A ENTREGA: retorna { entregue, status, id }. entregue=false ⇒ chegou ao servidor mas não ao aparelho (destino offline) → reenvie/logue. Aceita markdown do WhatsApp (*negrito*, _itálico_, ```mono```).',
+    inputSchema: { type: 'object', properties: { texto: { type: 'string', description: 'Texto (aceita markdown do WhatsApp).' } }, required: ['texto'] },
+    handler: async (a) => respEnvio(await enviarConteudo({ text: String(a.texto ?? '').trim() }, a.texto), 'Mensagem'),
+    valida: (a) => { if (!String(a.texto ?? '').trim()) throw new Error("'texto' é obrigatório."); },
+  },
+  {
+    name: 'enviar_imagem_whatsapp', extra: false,
+    description: 'Envia uma IMAGEM (via url ou base64) com legenda opcional. Ideal para gráficos: payoff de trava, curva de capital, IV Rank, print do cockpit. CONFIRMA A ENTREGA.',
+    inputSchema: { type: 'object', properties: { ...MIDIA_PROPS, legenda: { type: 'string', description: 'Legenda opcional.' } } },
+    handler: async (a) => respEnvio(await enviarConteudo({ image: await midiaBuffer(a), caption: a.legenda || undefined }, a.legenda || 'imagem'), 'Imagem'),
+  },
+  {
+    name: 'enviar_documento_whatsapp', extra: false,
+    description: 'Envia um DOCUMENTO (PDF/CSV/XLSX/etc., via url ou base64). Ideal para relatórios: P&L mensal, auditoria, CSV de posições. Informe nome_arquivo (com extensão). CONFIRMA A ENTREGA.',
+    inputSchema: { type: 'object', properties: { ...MIDIA_PROPS, nome_arquivo: { type: 'string', description: 'Nome do arquivo com extensão (ex: relatorio.pdf).' }, mimetype: { type: 'string', description: 'Opcional; inferido da extensão se omitido.' }, legenda: { type: 'string', description: 'Legenda opcional.' } }, required: ['nome_arquivo'] },
+    handler: async (a) => respEnvio(await enviarConteudo({ document: await midiaBuffer(a), fileName: a.nome_arquivo, mimetype: a.mimetype || mimeFromName(a.nome_arquivo), caption: a.legenda || undefined }, a.nome_arquivo), 'Documento'),
+    valida: (a) => { if (!String(a.nome_arquivo ?? '').trim()) throw new Error("'nome_arquivo' é obrigatório."); },
+  },
+  {
+    name: 'ler_mensagens_recebidas', extra: false,
+    description: 'Lê as mensagens de texto RECEBIDAS pelo número-robô (two-way). Use para o operador comandar pelo WhatsApp (ex: responder "status da carteira") — você lê aqui e age. Retorna as mais recentes primeiro. Buffer volátil (últimas 50).',
+    inputSchema: { type: 'object', properties: { limite: { type: 'integer', description: 'Quantas mensagens retornar (padrão 10).' } } },
+    handler: async (a) => {
+      const n = Math.max(1, Math.min(50, parseInt(a.limite ?? 10, 10) || 10));
+      const msgs = inbox.slice(-n).reverse().map((e) => ({ id: e.id, de: e.from, texto: e.texto, quando: new Date(e.at).toISOString() }));
+      return { total_no_buffer: inbox.length, mensagens: msgs };
+    },
+  },
+  {
+    name: 'verificar_status_envio', extra: false,
+    description: 'Consulta o status de entrega de um envio anterior pelo "id". Retorna se foi entregue/lido. Útil para reconferir quando o destino estava offline.',
+    inputSchema: { type: 'object', properties: { id: { type: 'string', description: 'id retornado por uma ferramenta de envio.' } }, required: ['id'] },
+    handler: async (a) => {
+      const id = String(a.id ?? '').trim();
+      const rec = enviosStatus.get(id);
+      if (!rec) return { id, encontrado: false, obs: 'id não rastreado (saiu do buffer dos últimos 300, ou inválido).' };
+      return { id, encontrado: true, status: rec.status, entregue: rec.statusNum >= 3, lido: rec.statusNum >= 4, quando: new Date(rec.at).toISOString(), preview: rec.preview };
+    },
+    valida: (a) => { if (!String(a.id ?? '').trim()) throw new Error("'id' é obrigatório."); },
+  },
+  {
+    name: 'verificar_status_conexao', extra: false,
+    description: 'Observabilidade do canal: online? desde quando? uptime? última entrega confirmada? Use ANTES de um alerta crítico.',
+    inputSchema: { type: 'object', properties: {} },
+    handler: async () => statusConexao(),
+  },
+
+  // ── Extras (atrás do portão HABILITAR_FERRAMENTAS_EXTRAS) ──
+  {
+    name: 'enviar_audio_whatsapp', extra: true,
+    description: '[EXTRA] Envia ÁUDIO. Com nota_de_voz=true, envia como mensagem de voz (PTT; requer áudio ogg/opus para tocar bem). CONFIRMA A ENTREGA.',
+    inputSchema: { type: 'object', properties: { ...MIDIA_PROPS, nota_de_voz: { type: 'boolean', description: 'true = mensagem de voz (PTT).' } } },
+    handler: async (a) => respEnvio(await enviarConteudo({ audio: await midiaBuffer(a), mimetype: a.nota_de_voz ? 'audio/ogg; codecs=opus' : 'audio/mpeg', ptt: !!a.nota_de_voz }, 'áudio'), 'Áudio'),
+  },
+  {
+    name: 'enviar_video_whatsapp', extra: true,
+    description: '[EXTRA] Envia VÍDEO (url ou base64) com legenda opcional. CONFIRMA A ENTREGA.',
+    inputSchema: { type: 'object', properties: { ...MIDIA_PROPS, legenda: { type: 'string', description: 'Legenda opcional.' } } },
+    handler: async (a) => respEnvio(await enviarConteudo({ video: await midiaBuffer(a), caption: a.legenda || undefined }, a.legenda || 'vídeo'), 'Vídeo'),
+  },
+  {
+    name: 'enviar_sticker_whatsapp', extra: true,
+    description: '[EXTRA] Envia um STICKER (idealmente webp, via url ou base64). CONFIRMA A ENTREGA.',
+    inputSchema: { type: 'object', properties: { ...MIDIA_PROPS } },
+    handler: async (a) => respEnvio(await enviarConteudo({ sticker: await midiaBuffer(a) }, 'sticker'), 'Sticker'),
+  },
+  {
+    name: 'responder_mensagem_whatsapp', extra: true,
+    description: '[EXTRA] Responde CITANDO uma mensagem recebida (reply/quote), pelo id dela (de ler_mensagens_recebidas). CONFIRMA A ENTREGA.',
+    inputSchema: { type: 'object', properties: { id_recebida: { type: 'string' }, texto: { type: 'string' } }, required: ['id_recebida', 'texto'] },
+    handler: async (a) => {
+      const e = entradaRecebida(String(a.id_recebida));
+      if (!e) throw new Error('mensagem recebida não encontrada no buffer.');
+      return respEnvio(await enviarConteudo({ text: String(a.texto) }, a.texto, { quoted: e.quotedRef }), 'Resposta');
+    },
+  },
+  {
+    name: 'editar_mensagem_whatsapp', extra: true,
+    description: '[EXTRA] Edita uma mensagem JÁ ENVIADA por este servidor, pelo id (ex: marcar um alerta como "resolvido").',
+    inputSchema: { type: 'object', properties: { id: { type: 'string' }, novo_texto: { type: 'string' } }, required: ['id', 'novo_texto'] },
+    handler: async (a) => { precisaConectado(); const k = keyEnviada(String(a.id)); if (!k) throw new Error('id enviado não encontrado.'); await sock.sendMessage(k.remoteJid, { text: String(a.novo_texto), edit: k }); return { ok: true, editada: a.id }; },
+  },
+  {
+    name: 'apagar_mensagem_whatsapp', extra: true,
+    description: '[EXTRA] Apaga PARA TODOS uma mensagem já enviada por este servidor, pelo id (retratar alerta falso).',
+    inputSchema: { type: 'object', properties: { id: { type: 'string' } }, required: ['id'] },
+    handler: async (a) => { precisaConectado(); const k = keyEnviada(String(a.id)); if (!k) throw new Error('id enviado não encontrado.'); await sock.sendMessage(k.remoteJid, { delete: k }); return { ok: true, apagada: a.id }; },
+  },
+  {
+    name: 'reagir_mensagem_whatsapp', extra: true,
+    description: '[EXTRA] Reage com emoji a uma mensagem (recebida ou enviada), pelo id.',
+    inputSchema: { type: 'object', properties: { id: { type: 'string' }, emoji: { type: 'string' } }, required: ['id', 'emoji'] },
+    handler: async (a) => { precisaConectado(); const e = entradaRecebida(String(a.id)); const k = e ? e.key : keyEnviada(String(a.id)); if (!k) throw new Error('id não encontrado (nem recebido nem enviado).'); await sock.sendMessage(k.remoteJid, { react: { text: String(a.emoji || '👍'), key: k } }); return { ok: true, reagiu_a: a.id, emoji: a.emoji }; },
+  },
+  {
+    name: 'marcar_como_lida_whatsapp', extra: true,
+    description: '[EXTRA] Marca como lida uma mensagem recebida (id específico) ou as últimas recebidas.',
+    inputSchema: { type: 'object', properties: { id_recebida: { type: 'string', description: 'Opcional; se omitido, marca as últimas recebidas.' } } },
+    handler: async (a) => { precisaConectado(); let keys = []; if (a.id_recebida) { const e = entradaRecebida(String(a.id_recebida)); if (!e) throw new Error('mensagem recebida não encontrada.'); keys = [e.key]; } else { keys = inbox.slice(-10).map((e) => e.key); } if (keys.length) await sock.readMessages(keys); return { ok: true, marcadas: keys.length }; },
+  },
+  {
+    name: 'enviar_presenca_whatsapp', extra: true,
+    description: '[EXTRA] Envia presença ao destino: "composing" (digitando), "recording" (gravando áudio), "paused", "available", "unavailable".',
+    inputSchema: { type: 'object', properties: { tipo: { type: 'string', enum: ['composing', 'recording', 'paused', 'available', 'unavailable'] } }, required: ['tipo'] },
+    handler: async (a) => { precisaConectado(); const jid = await destinoJid(); await sock.sendPresenceUpdate(String(a.tipo), jid); return { ok: true, presenca: a.tipo }; },
+  },
+];
+
+const TOOLS_ATIVAS = () => TOOLS.filter((t) => !t.extra || EXTRAS_ON);
 
 // ── MCP — mesmo padrão stateless usado no OpLab/Cockpit: server+transport novos
 // por requisição, closes ao final. ───────────────────────────────────────────
 function buildMcpServer() {
-  const srv = new Server({ name: 'whatsapp-mcp', version: '1.0.0' }, { capabilities: { tools: {} } });
+  const srv = new Server({ name: 'whatsapp-mcp', version: '2.0.0' }, { capabilities: { tools: {} } });
 
   srv.setRequestHandler(ListToolsRequestSchema, async () => ({
-    tools: [
-      {
-        name: 'enviar_mensagem_whatsapp',
-        description: 'Envia uma mensagem de texto para o WhatsApp do operador (destinatário fixo no servidor — não é parâmetro). Use para alertas. CONFIRMA A ENTREGA: espera o recibo de entrega e retorna JSON com "entregue" (true/false), "status" e "id". Se entregue=false, a mensagem chegou ao servidor mas ainda não ao aparelho (destinatário offline) — reenvie ou logue, e/ou use verificar_status_envio com o id.',
-        inputSchema: {
-          type: 'object',
-          properties: { texto: { type: 'string', description: 'Texto da mensagem a enviar.' } },
-          required: ['texto'],
-        },
-      },
-      {
-        name: 'verificar_status_envio',
-        description: 'Consulta o status de entrega de uma mensagem já enviada, pelo "id" retornado por enviar_mensagem_whatsapp. Retorna se foi entregue/lido. Útil para reconferir depois, quando o destinatário estava offline no momento do envio.',
-        inputSchema: {
-          type: 'object',
-          properties: { id: { type: 'string', description: 'O id da mensagem (campo "id" do retorno de enviar_mensagem_whatsapp).' } },
-          required: ['id'],
-        },
-      },
-      {
-        name: 'verificar_status_conexao',
-        description: 'Observabilidade do canal WhatsApp: diz se a sessão está ONLINE e pronta para enviar, desde quando está conectada, uptime e a última entrega confirmada. Use ANTES de disparar um alerta crítico para saber se o canal está funcionando.',
-        inputSchema: { type: 'object', properties: {} },
-      },
-    ],
+    tools: TOOLS_ATIVAS().map(({ name, description, inputSchema }) => ({ name, description, inputSchema })),
   }));
 
   srv.setRequestHandler(CallToolRequestSchema, async (request) => {
     const nome = request.params.name;
     const args = request.params.arguments ?? {};
     const json = (obj, isError = false) => ({ content: [{ type: 'text', text: JSON.stringify(obj, null, 2) }], isError });
+    const tool = TOOLS.find((t) => t.name === nome);
+    if (!tool) return json({ erro: `Ferramenta desconhecida: ${nome}` }, true);
+    if (tool.extra && !EXTRAS_ON) return json({ erro: `Ferramenta '${nome}' é EXTRA e não está autorizada. Habilite com HABILITAR_FERRAMENTAS_EXTRAS=true no servidor.` }, true);
     try {
-      if (nome === 'enviar_mensagem_whatsapp') {
-        const texto = String(args.texto ?? '').trim();
-        if (!texto) throw new Error("Parâmetro 'texto' é obrigatório.");
-        const r = await enviarMensagem(texto);
-        return json({
-          resultado: r.entregue
-            ? 'ENTREGUE no aparelho do destinatário.'
-            : 'Enviado ao servidor, mas NÃO confirmado como entregue (destinatário pode estar offline). Reenvie/logue, ou reconfira depois com verificar_status_envio.',
-          entregue: r.entregue, status: r.status, id: r.id,
-        });
-      }
-      if (nome === 'verificar_status_envio') {
-        const id = String(args.id ?? '').trim();
-        if (!id) throw new Error("Parâmetro 'id' é obrigatório.");
-        const rec = enviosStatus.get(id);
-        if (!rec) return json({ id, encontrado: false, obs: 'id não rastreado (pode ter saído do buffer dos últimos 300, ou id inválido).' });
-        return json({ id, encontrado: true, status: rec.status, entregue: rec.statusNum >= 3, lido: rec.statusNum >= 4, quando: new Date(rec.at).toISOString(), preview: rec.preview });
-      }
-      if (nome === 'verificar_status_conexao') {
-        return json(statusConexao());
-      }
-      throw new Error(`Ferramenta desconhecida: ${nome}`);
+      if (tool.valida) tool.valida(args);
+      return json(await tool.handler(args));
     } catch (e) {
       return json({ erro: e.message }, true);
     }
