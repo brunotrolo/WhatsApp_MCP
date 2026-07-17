@@ -93,7 +93,23 @@ async function enviarMensagem(texto) {
   if (!sock || connectionStatus !== 'conectado') {
     throw new Error(`WhatsApp não está conectado (status atual: ${connectionStatus}). Verifique a sessão na VM.`);
   }
-  await sock.sendMessage(WHATSAPP_DESTINO, { text: texto });
+  const numero = WHATSAPP_DESTINO.replace(/@.*/, '').replace(/\D/g, '');
+  // Resolve o JID canônico via onWhatsApp — ESSENCIAL no Brasil: o "9º dígito" faz
+  // o número digitado (5511976765644) divergir do JID que o WhatsApp reconhece (às
+  // vezes 551176765644). Sem isso, o envio "tem sucesso" mas NÃO é entregue.
+  let jid = `${numero}@s.whatsapp.net`;
+  try {
+    const [info] = await sock.onWhatsApp(numero);
+    if (info?.exists && info.jid) {
+      jid = info.jid;
+    } else {
+      console.log(`AVISO: onWhatsApp não confirmou ${numero} — tentando JID cru ${jid}.`);
+    }
+  } catch (e) {
+    console.log(`AVISO: onWhatsApp falhou (${e.message}) — tentando JID cru ${jid}.`);
+  }
+  console.log(`Enviando para JID: ${jid} (número informado: ${numero})`);
+  await sock.sendMessage(jid, { text: texto });
 }
 
 // ── MCP — mesmo padrão stateless usado no OpLab/Cockpit: server+transport novos
@@ -139,11 +155,7 @@ app.use(express.json());
 // /health é público de propósito (monitoramento simples via curl, sem segredo).
 app.get('/health', (_req, res) => res.json({ status: 'ok', whatsapp: connectionStatus }));
 
-app.post('/mcp', async (req, res) => {
-  if (req.header('x-api-key') !== MCP_API_KEY) {
-    res.status(401).json({ error: 'x-api-key inválida ou ausente' });
-    return;
-  }
+async function handleMcp(req, res) {
   const server = buildMcpServer();
   const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
   res.on('close', () => { transport.close(); server.close(); });
@@ -154,6 +166,21 @@ app.post('/mcp', async (req, res) => {
     console.error('Erro MCP:', e);
     if (!res.headersSent) res.status(500).json({ jsonrpc: '2.0', error: { code: -32603, message: 'Internal error' }, id: null });
   }
+}
+
+// Auth por HEADER (x-api-key) — para curl/testes e para o modo beta de "request
+// headers" do claude.ai.
+app.post('/mcp', (req, res) => {
+  if (req.header('x-api-key') !== MCP_API_KEY) return res.status(401).json({ error: 'x-api-key inválida ou ausente' });
+  return handleMcp(req, res);
+});
+
+// Auth por PATH — o conector padrão do claude.ai (fora do beta de headers) só guarda
+// a URL, então a chave viaja embutida no caminho: /mcp/<chave>. É esta a URL usada
+// no conector do claude.ai. Mesmo nível de segredo do header, só em outra posição.
+app.post('/mcp/:key', (req, res) => {
+  if (req.params.key !== MCP_API_KEY) return res.status(401).json({ error: 'chave inválida no path' });
+  return handleMcp(req, res);
 });
 
 startBaileys().catch((e) => { console.error('Falha ao iniciar Baileys:', e); process.exit(1); });
