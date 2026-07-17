@@ -36,6 +36,8 @@ mesma observabilidade (uptime check externo).
 | `ler_mensagens_recebidas(limite?)` | **Two-way:** lê as mensagens recebidas pelo robô (o operador comanda pelo WhatsApp; o assistente lê e age). |
 | `verificar_status_envio(id)` | Reconfere entrega/leitura de um envio anterior. |
 | `verificar_status_conexao()` | Observabilidade do canal (online? desde quando? última entrega OK?). |
+| `enviar_alerta_falado(texto, voz?)` | **Alerta falado:** gera a fala do texto (Google TTS Neural pt-BR) e envia como nota de voz. Só aparece com `GOOGLE_TTS_API_KEY` configurada — ver setup em [`docs/FERRAMENTAS.md`](docs/FERRAMENTAS.md). |
+| `guia_de_uso(topico?)` | **Guia para a LLM:** como usar as ferramentas complexas, com exemplos e boas práticas. A própria IA chama quando tem dúvida. |
 
 ### Extras (desligadas por padrão — atrás de `HABILITAR_FERRAMENTAS_EXTRAS`)
 Implementadas para exploração futura; só aparecem/funcionam com `HABILITAR_FERRAMENTAS_EXTRAS=true`:

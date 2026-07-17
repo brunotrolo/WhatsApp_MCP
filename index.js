@@ -323,6 +323,53 @@ function entradaRecebida(id) { return inbox.find((e) => e.id === id); }
 // HABILITAR_FERRAMENTAS_EXTRAS (desligada por padrão; implementada para exploração).
 const MIDIA_PROPS = { url: { type: 'string', description: 'URL pública da mídia (alternativa a base64).' }, base64: { type: 'string', description: 'Conteúdo em base64 (alternativa a url).' } };
 
+// Guia de uso para a própria LLM — chamável via a ferramenta guia_de_uso quando o
+// modelo tiver dúvida de como usar as ferramentas mais complexas.
+const GUIA = {
+  geral: [
+    'O destino é FIXO no servidor — nenhuma ferramenta aceita número do destinatário.',
+    'Toda ferramenta de ENVIO confirma a entrega e retorna { entregue, status, id }.',
+    'entregue=false ⇒ chegou ao servidor mas não ao aparelho (destino offline): reenvie mais tarde ou logue, e/ou use verificar_status_envio(id).',
+    'Antes de um alerta CRÍTICO, cheque verificar_status_conexao() — se online=false, o alerta não sairá.',
+    'Texto aceita markdown do WhatsApp: *negrito*, _itálico_, ```mono```.',
+  ],
+  alerta_falado: {
+    quando: 'Alerta que o operador deve OUVIR sem abrir o app (ex: risco de carteira, limite cruzado).',
+    como: 'Passe só `texto` (pt-BR). Frases curtas soam melhor. `voz` opcional (padrão pt-BR-Neural2-C feminina; pt-BR-Neural2-B masculina).',
+    exemplo: { name: 'enviar_alerta_falado', arguments: { texto: 'Atenção: EGIE3 cruzou o limite de delta. Reveja a posição.' } },
+    obs: 'Requer GOOGLE_TTS_API_KEY no servidor; se a ferramenta não aparece, a chave não está configurada.',
+  },
+  imagem: {
+    quando: 'Enviar um gráfico (payoff de trava, curva de capital, IV Rank, print do cockpit).',
+    como: 'Forneça `url` (link público) OU `base64` (se VOCÊ gerou a imagem). `legenda` opcional. Máx 16MB.',
+    exemplo: { name: 'enviar_imagem_whatsapp', arguments: { base64: '<png/jpeg em base64>', legenda: 'Payoff da trava BBDC4' } },
+  },
+  documento: {
+    quando: 'Enviar relatório/planilha (PDF, CSV, XLSX).',
+    como: 'Forneça `url` OU `base64`, e SEMPRE `nome_arquivo` com extensão. `legenda` opcional.',
+    exemplo: { name: 'enviar_documento_whatsapp', arguments: { url: 'https://.../relatorio.pdf', nome_arquivo: 'relatorio-mensal.pdf' } },
+  },
+  receber: {
+    quando: 'Two-way: o operador responde no WhatsApp e você lê e age.',
+    como: 'ler_mensagens_recebidas({limite}) devolve as mais recentes primeiro (id, de, texto, quando). Para responder citando, use responder_mensagem_whatsapp (extra).',
+    obs: 'Buffer volátil (últimas 50). Não é push: você lê quando o usuário pedir/no seu ciclo.',
+  },
+  entrega: {
+    como: 'Status de mensagem: pendente → enviado_ao_servidor → entregue → lido. verificar_status_envio(id) reconfere depois (útil se o destino estava offline no envio).',
+  },
+  boas_praticas: [
+    'Não repita alertas em excesso — é conexão não-oficial e volume alto aumenta risco de banimento.',
+    'Para gráficos gerados por você, prefira `base64` (evita depender de hospedar a imagem).',
+    'Áudio como nota de voz: use enviar_audio_whatsapp com nota_de_voz=true (o servidor transcodifica p/ opus).',
+    'Se um envio falhar, a resposta traz um campo "erro" claro — leia e ajuste (URL ruim, mídia grande, etc.).',
+  ],
+};
+function guiaDeUso(topico) {
+  const t = String(topico ?? '').trim().toLowerCase();
+  if (t && GUIA[t]) return { topico: t, guia: GUIA[t] };
+  return { topicos_disponiveis: Object.keys(GUIA), guia: GUIA };
+}
+
 const TOOLS = [
   // ── Recomendadas ──
   {
@@ -372,6 +419,12 @@ const TOOLS = [
     description: 'Observabilidade do canal: online? desde quando? uptime? última entrega confirmada? Use ANTES de um alerta crítico.',
     inputSchema: { type: 'object', properties: {} },
     handler: async () => statusConexao(),
+  },
+  {
+    name: 'guia_de_uso', extra: false,
+    description: 'GUIA DE USO destas ferramentas do WhatsApp — como usar as mais complexas (alerta falado, imagem, documento, two-way), com exemplos e boas práticas. CHAME esta ferramenta quando tiver dúvida de como usar qualquer outra, antes de tentar às cegas.',
+    inputSchema: { type: 'object', properties: { topico: { type: 'string', description: 'Opcional. Filtra por tema: geral, alerta_falado, imagem, documento, receber, entrega, boas_praticas. Sem tópico, retorna o guia completo.' } } },
+    handler: async (a) => guiaDeUso(a.topico),
   },
   {
     name: 'enviar_alerta_falado', extra: false, requerEnv: 'GOOGLE_TTS_API_KEY',

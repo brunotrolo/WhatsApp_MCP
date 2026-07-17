@@ -19,6 +19,7 @@ independe de recibos de leitura; o `lido` é best-effort.
 | `verificar_status_envio` | `id` | Reconfere entrega/leitura de um envio anterior pelo `id`. |
 | `verificar_status_conexao` | — | Observabilidade: online?, desde quando, uptime, última entrega confirmada. |
 | `enviar_alerta_falado` | `texto`, `voz?` | **Alerta falado:** gera a fala do `texto` com voz humana (Google Cloud TTS, pt-BR Neural) e envia como **nota de voz**. Requer `GOOGLE_TTS_API_KEY` no servidor (só aparece quando configurada). |
+| `guia_de_uso` | `topico?` | **Guia para a LLM:** como usar as ferramentas complexas, com exemplos e boas práticas. A IA chama quando tem dúvida (tópicos: geral, alerta_falado, imagem, documento, receber, entrega, boas_praticas). |
 
 ### Configurar o alerta falado (`enviar_alerta_falado`)
 Precisa de uma **API key restrita ao Cloud Text-to-Speech**, no env da VM. Uma vez:
