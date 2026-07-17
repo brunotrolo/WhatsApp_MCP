@@ -18,6 +18,22 @@ independe de recibos de leitura; o `lido` é best-effort.
 | `ler_mensagens_recebidas` | `limite?` | **Two-way:** lê as mensagens de texto recebidas pelo robô (o operador comanda pelo WhatsApp; o assistente lê e age). |
 | `verificar_status_envio` | `id` | Reconfere entrega/leitura de um envio anterior pelo `id`. |
 | `verificar_status_conexao` | — | Observabilidade: online?, desde quando, uptime, última entrega confirmada. |
+| `enviar_alerta_falado` | `texto`, `voz?` | **Alerta falado:** gera a fala do `texto` com voz humana (Google Cloud TTS, pt-BR Neural) e envia como **nota de voz**. Requer `GOOGLE_TTS_API_KEY` no servidor (só aparece quando configurada). |
+
+### Configurar o alerta falado (`enviar_alerta_falado`)
+Precisa de uma **API key restrita ao Cloud Text-to-Speech**, no env da VM. Uma vez:
+```bash
+PROJ=whatsapp-mcp-server-502704
+gcloud services enable texttospeech.googleapis.com apikeys.googleapis.com --project=$PROJ
+# criar a API key restrita ao TTS (copie o "keyString" do output):
+gcloud services api-keys create --display-name=whatsapp-tts \
+  --api-target=service=texttospeech.googleapis.com --project=$PROJ
+# gravar na VM + reiniciar:
+gcloud compute ssh whatsapp-mcp-vm --project=$PROJ --zone=us-east1-b \
+  --command="echo 'GOOGLE_TTS_API_KEY=<KEY_STRING>' | sudo tee -a /etc/systemd/system/whatsapp-mcp.env && sudo systemctl restart whatsapp-mcp"
+```
+Voz padrão `pt-BR-Neural2-C` (feminina); alternativas: `pt-BR-Neural2-B` (masculina), `pt-BR-Wavenet-A`.
+Free tier do TTS: ~1M caracteres/mês (Neural) → alertas curtos ficam em ~R$0.
 
 ## Extras (desligadas por padrão — `HABILITAR_FERRAMENTAS_EXTRAS=true`)
 

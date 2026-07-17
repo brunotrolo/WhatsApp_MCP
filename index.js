@@ -276,6 +276,28 @@ function transcodeParaOpus(buffer) {
   });
 }
 
+// Text-to-Speech via Google Cloud TTS (voz Neural pt-BR). Autentica por API KEY
+// (env GOOGLE_TTS_API_KEY) — a VM não tem escopo cloud-platform para usar a service
+// account direto. Retorna Buffer mp3. Free tier ~1M chars/mês (Neural).
+const TTS_VOZ_PADRAO = 'pt-BR-Neural2-C';
+async function sintetizarTTS(texto, voz, apiKey) {
+  const body = { input: { text: texto }, voice: { languageCode: 'pt-BR', name: voz || TTS_VOZ_PADRAO }, audioConfig: { audioEncoding: 'MP3' } };
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), FETCH_TIMEOUT_MS);
+  try {
+    const r = await fetch(`https://texttospeech.googleapis.com/v1/text:synthesize?key=${encodeURIComponent(apiKey)}`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body), signal: ctrl.signal,
+    });
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok || !data.audioContent) throw new Error(`Google TTS falhou (HTTP ${r.status}): ${data?.error?.message || 'sem audioContent'}`);
+    return Buffer.from(data.audioContent, 'base64');
+  } catch (e) {
+    throw new Error(e.name === 'AbortError' ? `Google TTS: timeout de ${FETCH_TIMEOUT_MS / 1000}s` : e.message);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 function mimeFromName(nome = '') {
   const ext = String(nome).toLowerCase().split('.').pop();
   return ({ pdf: 'application/pdf', csv: 'text/csv', txt: 'text/plain', json: 'application/json',
@@ -351,6 +373,20 @@ const TOOLS = [
     inputSchema: { type: 'object', properties: {} },
     handler: async () => statusConexao(),
   },
+  {
+    name: 'enviar_alerta_falado', extra: false, requerEnv: 'GOOGLE_TTS_API_KEY',
+    description: 'Envia um ALERTA FALADO: recebe o TEXTO, gera a fala com voz humana (Google Cloud TTS, pt-BR Neural) e envia como NOTA DE VOZ no WhatsApp. O operador ouve o alerta sem abrir o app. CONFIRMA A ENTREGA. Ideal para risco de carteira/limite cruzado.',
+    inputSchema: { type: 'object', properties: {
+      texto: { type: 'string', description: 'O que será falado (pt-BR). Frases curtas soam melhor.' },
+      voz: { type: 'string', description: 'Voz do TTS (padrão pt-BR-Neural2-C, feminina). Ex.: pt-BR-Neural2-B (masculina).' },
+    }, required: ['texto'] },
+    valida: (a) => { if (!String(a.texto ?? '').trim()) throw new Error("'texto' é obrigatório."); },
+    handler: async (a) => {
+      const mp3 = await sintetizarTTS(String(a.texto).trim(), a.voz, process.env.GOOGLE_TTS_API_KEY);
+      const opus = await transcodeParaOpus(mp3);
+      return respEnvio(await enviarConteudo({ audio: opus, mimetype: 'audio/ogg; codecs=opus', ptt: true }, String(a.texto).slice(0, 80)), 'Alerta falado');
+    },
+  },
 
   // ── Extras (atrás do portão HABILITAR_FERRAMENTAS_EXTRAS) ──
   {
@@ -418,7 +454,8 @@ const TOOLS = [
   },
 ];
 
-const TOOLS_ATIVAS = () => TOOLS.filter((t) => !t.extra || EXTRAS_ON);
+// Ferramenta aparece se: (não é extra OU extras ligados) E (não requer env OU o env está setado).
+const TOOLS_ATIVAS = () => TOOLS.filter((t) => (!t.extra || EXTRAS_ON) && (!t.requerEnv || process.env[t.requerEnv]));
 
 // ── MCP — mesmo padrão stateless usado no OpLab/Cockpit: server+transport novos
 // por requisição, closes ao final. ───────────────────────────────────────────
@@ -436,6 +473,7 @@ function buildMcpServer() {
     const tool = TOOLS.find((t) => t.name === nome);
     if (!tool) return json({ erro: `Ferramenta desconhecida: ${nome}` }, true);
     if (tool.extra && !EXTRAS_ON) return json({ erro: `Ferramenta '${nome}' é EXTRA e não está autorizada. Habilite com HABILITAR_FERRAMENTAS_EXTRAS=true no servidor.` }, true);
+    if (tool.requerEnv && !process.env[tool.requerEnv]) return json({ erro: `Ferramenta '${nome}' requer ${tool.requerEnv} configurada no servidor (env da VM).` }, true);
     try {
       if (tool.valida) tool.valida(args);
       return json(await tool.handler(args));
