@@ -30,10 +30,18 @@ mesma observabilidade (uptime check externo).
 
 ### Extras (desligadas por padrão — atrás de `HABILITAR_FERRAMENTAS_EXTRAS`)
 Implementadas para exploração futura; só aparecem/funcionam com `HABILITAR_FERRAMENTAS_EXTRAS=true`:
-`enviar_audio_whatsapp`, `enviar_video_whatsapp`, `enviar_sticker_whatsapp`,
-`responder_mensagem_whatsapp` (reply/quote), `editar_mensagem_whatsapp`,
-`apagar_mensagem_whatsapp`, `reagir_mensagem_whatsapp`, `marcar_como_lida_whatsapp`,
-`enviar_presenca_whatsapp` (digitando/gravando).
+
+| Ferramenta | O que faz |
+|---|---|
+| `enviar_audio_whatsapp(url\|base64, nota_de_voz?)` | Envia áudio; com `nota_de_voz=true` manda como mensagem de voz (PTT — requer ogg/opus p/ tocar bem). |
+| `enviar_video_whatsapp(url\|base64, legenda?)` | Envia vídeo com legenda opcional. |
+| `enviar_sticker_whatsapp(url\|base64)` | Envia um sticker (idealmente webp). |
+| `responder_mensagem_whatsapp(id_recebida, texto)` | Responde **citando** (reply/quote) uma mensagem recebida, pelo id de `ler_mensagens_recebidas`. |
+| `editar_mensagem_whatsapp(id, novo_texto)` | Edita uma mensagem já enviada por este servidor (ex: marcar alerta como "resolvido"). |
+| `apagar_mensagem_whatsapp(id)` | Apaga **para todos** uma mensagem já enviada (retratar alerta falso). |
+| `reagir_mensagem_whatsapp(id, emoji)` | Reage com emoji a uma mensagem (recebida ou enviada). |
+| `marcar_como_lida_whatsapp(id_recebida?)` | Marca mensagens recebidas como lidas (uma específica, ou as últimas). |
+| `enviar_presenca_whatsapp(tipo)` | Envia presença ao destino: `composing` (digitando), `recording` (gravando), `paused`, `available`, `unavailable`. |
 
 **Para autorizar os extras** (na VM):
 ```bash
