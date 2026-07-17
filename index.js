@@ -15,6 +15,7 @@
 import express from 'express';
 import pino from 'pino';
 import qrcodeTerminal from 'qrcode-terminal';
+import { spawn } from 'node:child_process';
 import makeWASocket, { useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion, Browsers } from '@whiskeysockets/baileys';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
@@ -251,6 +252,30 @@ async function midiaBuffer(a) {
   return buf;
 }
 
+// Transcodifica qualquer áudio (mp3/wav/…) para ogg/opus mono via ffmpeg — exigência
+// do WhatsApp para NOTA DE VOZ (PTT). Sem isto, um mp3 marcado como PTT chega "quebrado"
+// ("áudio não disponível"). Requer ffmpeg instalado na VM (o startup-script instala).
+function transcodeParaOpus(buffer) {
+  return new Promise((resolve, reject) => {
+    const ff = spawn('ffmpeg', ['-hide_banner', '-loglevel', 'error', '-i', 'pipe:0',
+      '-c:a', 'libopus', '-b:a', '48k', '-ar', '48000', '-ac', '1', '-f', 'ogg', 'pipe:1']);
+    const out = [], err = [];
+    const timer = setTimeout(() => { ff.kill('SIGKILL'); reject(new Error('transcodificação de áudio passou de 30s')); }, 30_000);
+    ff.stdout.on('data', (d) => out.push(d));
+    ff.stderr.on('data', (d) => err.push(d));
+    ff.on('error', (e) => { clearTimeout(timer); reject(new Error(e.code === 'ENOENT' ? 'ffmpeg não instalado na VM (redeploy para instalar)' : `ffmpeg: ${e.message}`)); });
+    ff.on('close', (code) => {
+      clearTimeout(timer);
+      if (code !== 0) return reject(new Error(`ffmpeg falhou (code ${code}): ${Buffer.concat(err).toString().slice(0, 200)}`));
+      const b = Buffer.concat(out);
+      b.length ? resolve(b) : reject(new Error('transcodificação produziu áudio vazio.'));
+    });
+    ff.stdin.on('error', () => {}); // ignora EPIPE se o ffmpeg fechar cedo
+    ff.stdin.write(buffer);
+    ff.stdin.end();
+  });
+}
+
 function mimeFromName(nome = '') {
   const ext = String(nome).toLowerCase().split('.').pop();
   return ({ pdf: 'application/pdf', csv: 'text/csv', txt: 'text/plain', json: 'application/json',
@@ -330,9 +355,14 @@ const TOOLS = [
   // ── Extras (atrás do portão HABILITAR_FERRAMENTAS_EXTRAS) ──
   {
     name: 'enviar_audio_whatsapp', extra: true,
-    description: '[EXTRA] Envia ÁUDIO. Com nota_de_voz=true, envia como mensagem de voz (PTT; requer áudio ogg/opus para tocar bem). CONFIRMA A ENTREGA.',
-    inputSchema: { type: 'object', properties: { ...MIDIA_PROPS, nota_de_voz: { type: 'boolean', description: 'true = mensagem de voz (PTT).' } } },
-    handler: async (a) => respEnvio(await enviarConteudo({ audio: await midiaBuffer(a), mimetype: a.nota_de_voz ? 'audio/ogg; codecs=opus' : 'audio/mpeg', ptt: !!a.nota_de_voz }, 'áudio'), 'Áudio'),
+    description: '[EXTRA] Envia ÁUDIO (url|base64). Com nota_de_voz=true, envia como mensagem de VOZ (PTT) — o servidor transcodifica automaticamente para ogg/opus (via ffmpeg), então qualquer formato de entrada vira nota de voz que toca. CONFIRMA A ENTREGA.',
+    inputSchema: { type: 'object', properties: { ...MIDIA_PROPS, nota_de_voz: { type: 'boolean', description: 'true = mensagem de voz (PTT); o áudio é convertido para opus automaticamente.' } } },
+    handler: async (a) => {
+      let buf = await midiaBuffer(a);
+      let mimetype = 'audio/mpeg';
+      if (a.nota_de_voz) { buf = await transcodeParaOpus(buf); mimetype = 'audio/ogg; codecs=opus'; }
+      return respEnvio(await enviarConteudo({ audio: buf, mimetype, ptt: !!a.nota_de_voz }, 'áudio'), 'Áudio');
+    },
   },
   {
     name: 'enviar_video_whatsapp', extra: true,

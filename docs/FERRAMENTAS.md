@@ -23,7 +23,7 @@ independe de recibos de leitura; o `lido` é best-effort.
 
 | Ferramenta | Parâmetros | O que faz |
 |---|---|---|
-| `enviar_audio_whatsapp` | `url`\|`base64`, `nota_de_voz?` | Áudio; `nota_de_voz=true` = mensagem de voz (PTT; requer ogg/opus). |
+| `enviar_audio_whatsapp` | `url`\|`base64`, `nota_de_voz?` | Áudio; `nota_de_voz=true` = mensagem de **voz (PTT)** — o servidor **transcodifica automaticamente para ogg/opus** (via ffmpeg), então qualquer formato de entrada (mp3, wav…) vira nota de voz que toca. |
 | `enviar_video_whatsapp` | `url`\|`base64`, `legenda?` | Vídeo com legenda opcional. |
 | `enviar_sticker_whatsapp` | `url`\|`base64` | Sticker (idealmente webp). |
 | `responder_mensagem_whatsapp` | `id_recebida`, `texto` | Responde **citando** (reply) uma mensagem recebida. |
