@@ -1,50 +1,53 @@
 # WhatsApp MCP (Baileys puro)
 
-Servidor MCP com uma única ferramenta — `enviar_mensagem_whatsapp(texto)` — para mandar
-alertas pro WhatsApp pessoal do operador. Usa [Baileys](https://github.com/WhiskeySockets/Baileys)
-diretamente (sem Evolution API, sem Postgres, sem Redis), rodando numa VM Compute Engine
-`e2-micro` sempre ligada (Always Free tier do Google Cloud — custo ~R$0/mês).
+Servidor MCP com uma única ferramenta — `enviar_mensagem_whatsapp(texto)` — para um
+assistente (ex.: Claude) mandar alertas no WhatsApp pessoal do operador. Usa
+[Baileys](https://github.com/WhiskeySockets/Baileys) diretamente (sem Evolution API,
+sem Postgres, sem Redis), rodando numa VM Compute Engine `e2-micro` sempre ligada
+(Always Free tier do Google Cloud — custo ~R$0/mês).
 
-**Por que precisa de VM (não Cloud Run)?** A sessão WhatsApp Web exige uma conexão
-WebSocket persistente e contínua. O Cloud Run congela a CPU do container entre
-requisições (é assim que ele cobra quase nada) — incompatível com manter uma sessão
-sempre viva. Ver `docs/estudo-viabilidade-mcp-whatsapp.md` no repo
-[GoogleCloud_Projects](https://github.com/brunotrolo/GoogleCloud_Projects) para o
-estudo completo.
+> **Por que VM e não Cloud Run?** A sessão WhatsApp Web exige um WebSocket persistente;
+> o Cloud Run congela a CPU do container entre requisições. Estudo completo e histórico
+> de decisões no repo [GoogleCloud_Projects](https://github.com/brunotrolo/GoogleCloud_Projects)
+> (`docs/estudo-viabilidade-mcp-whatsapp.md` e `docs/whatsapp-mcp-arquitetura.md`).
+
+## Dois números, dois papéis
+- **Remetente (robô):** número que escaneia o QR e mantém a sessão. Use um número
+  **secundário** (reduz risco de banimento do principal).
+- **Destino (`WHATSAPP_DESTINO`):** onde os alertas chegam — seu número principal.
+- Se remetente == destino, a mensagem vai para o chat "Mensagem para mim". Use números diferentes.
 
 ## Deploy
+Provisionado pelo script `scripts/aplicar_whatsapp_mcp.sh` do repo `GoogleCloud_Projects`,
+que também cria a VM, o firewall, o IP estático e o HTTPS (Caddy + `sslip.io`). Este
+repositório é publicado automaticamente por esse script.
 
-Este repositório é publicado automaticamente pelo script
-`scripts/aplicar_whatsapp_mcp.sh` do repo `GoogleCloud_Projects` — que também
-provisiona a VM, o firewall, o IP estático e o HTTPS (Caddy + `sslip.io`). Não é
-necessário rodar nada manualmente aqui além do pareamento inicial por QR code.
+## Endpoints
+| Método/rota | Descrição |
+|---|---|
+| `POST /mcp/:key` | MCP autenticado pela **chave no path** — é esta a URL usada no conector do claude.ai: `https://<host>/mcp/<MCP_API_KEY>`. |
+| `POST /mcp` | MCP autenticado pelo header `x-api-key` (curl/testes). |
+| `GET /health` | Público: `{ "status": "ok", "whatsapp": "conectado" \| "reconectando" \| "aguardando_qr" \| "deslogado_precisa_novo_qr" }`. |
 
-## Primeira vez — pareamento do WhatsApp (manual, uma única vez)
+## Variáveis de ambiente (`/etc/systemd/system/whatsapp-mcp.env` na VM)
+| Variável | Descrição |
+|---|---|
+| `MCP_API_KEY` | Chave exigida em `/mcp` (header) e `/mcp/:key` (path). Gerada no deploy. |
+| `WHATSAPP_DESTINO` | Número de destino, só dígitos ou JID (`5511999999999` ou `...@s.whatsapp.net`). O código resolve o JID canônico via `onWhatsApp()` (trata o "9º dígito" do Brasil). |
+| `PORT` | Porta interna do Node (padrão 8080; Caddy faz o HTTPS na frente). |
 
+## Pareamento (1ª vez / após logout)
 ```bash
 gcloud compute ssh whatsapp-mcp-vm --project=<PROJECT_ID> --zone=us-east1-b
 sudo journalctl -u whatsapp-mcp -f
 ```
+Escaneie o QR com o celular **remetente** (WhatsApp → Aparelhos conectados → Conectar um aparelho).
+A sessão fica salva em `auth_info_baileys` e reconecta sozinha.
 
-Escaneie o QR code que aparecer com **WhatsApp → Aparelhos conectados → Conectar
-um aparelho**, no celular que você quer usar como remetente. Depois disso a sessão
-fica salva em `/opt/whatsapp-mcp/auth_info_baileys` e reconecta sozinha.
+## Troubleshooting
+A saga de bugs (405, `dubious ownership` do git, 9º dígito, número errado, OAuth do
+conector) está documentada em `docs/whatsapp-mcp-arquitetura.md` no repo GoogleCloud_Projects
+— leia antes de repetir os erros.
 
-## Variáveis de ambiente (`/etc/systemd/system/whatsapp-mcp.env` na VM)
-
-| Variável | Descrição |
-|---|---|
-| `MCP_API_KEY` | Chave exigida no header `X-API-Key` de toda chamada a `/mcp`. Gerada automaticamente no deploy. |
-| `WHATSAPP_DESTINO` | JID fixo do destinatário (`5511999999999@s.whatsapp.net`). Não é parâmetro da ferramenta — evita mandar pra número errado por engano do modelo. |
-| `PORT` | Porta interna do Node (padrão 8080; Caddy faz o proxy HTTPS na frente). |
-
-## Endpoints
-
-- `POST /mcp` — protocolo MCP (Streamable HTTP), exige `X-API-Key`.
-- `GET /health` — público, sem segredo: `{ "status": "ok", "whatsapp": "conectado" | "reconectando" | "aguardando_qr" | "deslogado_precisa_novo_qr" }`.
-
-## Se a sessão cair (deslogado remotamente, troca de celular)
-
-`GET /health` reporta `deslogado_precisa_novo_qr`. Reinicie o serviço
-(`sudo systemctl restart whatsapp-mcp`) e repita o passo de pareamento acima —
-não tem como automatizar essa etapa, é segurança do próprio WhatsApp.
+## Licença
+MIT — ver `LICENSE`.
