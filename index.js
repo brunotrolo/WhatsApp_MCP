@@ -199,12 +199,25 @@ function esperarAck(id) {
   });
 }
 
+const MAX_MEDIA_BYTES = 16 * 1024 * 1024; // 16MB — limite prático do WhatsApp
+const FETCH_TIMEOUT_MS = 20_000;          // baixar mídia de URL
+const SEND_TIMEOUT_MS = 45_000;           // upload da mídia ao WhatsApp
+
+// Corre `promise` contra um timeout. Sem isto, uma URL lenta ou um upload travado do
+// Baileys penduram a requisição MCP e "travam" o chat do orquestrador (bug relatado).
+function comTimeout(promise, ms, label) {
+  let t;
+  const timeout = new Promise((_, rej) => { t = setTimeout(() => rej(new Error(`${label}: timeout após ${Math.round(ms / 1000)}s`)), ms); });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(t));
+}
+
 // Envia um `content` Baileys (texto, imagem, documento, etc.) para o destino fixo,
 // rastreia o id e espera o recibo de entrega. Retorna { id, status, entregue }.
 async function enviarConteudo(content, preview, options = {}) {
   precisaConectado();
   const jid = await destinoJid();
-  const sent = await sock.sendMessage(jid, content, options);
+  // Timeout no envio: mídia grande / rede instável não pode pendurar a requisição.
+  const sent = await comTimeout(sock.sendMessage(jid, content, options), SEND_TIMEOUT_MS, 'envio ao WhatsApp');
   const id = sent?.key?.id ?? null;
   console.log(`Enviado id=${id} para JID=${jid}`);
   if (id) registrarStatus(id, 2, { preview: String(preview ?? '').slice(0, 80), jid });
@@ -213,14 +226,29 @@ async function enviarConteudo(content, preview, options = {}) {
 }
 
 // Baixa mídia de base64 (data URI ou puro) ou de uma URL pública → Buffer.
+// Com timeout de download e limite de tamanho — para não pendurar nem estourar memória.
 async function midiaBuffer(a) {
-  if (a.base64) return Buffer.from(String(a.base64).replace(/^data:[^;]+;base64,/, ''), 'base64');
-  if (a.url) {
-    const r = await fetch(String(a.url));
-    if (!r.ok) throw new Error(`falha ao baixar a URL (HTTP ${r.status})`);
-    return Buffer.from(await r.arrayBuffer());
+  let buf;
+  if (a.base64) {
+    buf = Buffer.from(String(a.base64).replace(/^data:[^;]+;base64,/, ''), 'base64');
+  } else if (a.url) {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), FETCH_TIMEOUT_MS);
+    try {
+      const r = await fetch(String(a.url), { signal: ctrl.signal });
+      if (!r.ok) throw new Error(`falha ao baixar a URL (HTTP ${r.status})`);
+      buf = Buffer.from(await r.arrayBuffer());
+    } catch (e) {
+      throw new Error(e.name === 'AbortError' ? `download da URL passou de ${FETCH_TIMEOUT_MS / 1000}s (URL lenta/inacessível)` : `falha ao baixar a URL: ${e.message}`);
+    } finally {
+      clearTimeout(timer);
+    }
+  } else {
+    throw new Error("forneça 'base64' (conteúdo) ou 'url' (link público) da mídia.");
   }
-  throw new Error("forneça 'base64' (conteúdo) ou 'url' (link público) da mídia.");
+  if (!buf.length) throw new Error('mídia vazia.');
+  if (buf.length > MAX_MEDIA_BYTES) throw new Error(`mídia muito grande (${(buf.length / 1e6).toFixed(1)}MB; máximo ${MAX_MEDIA_BYTES / 1e6}MB).`);
+  return buf;
 }
 
 function mimeFromName(nome = '') {
@@ -391,7 +419,7 @@ function buildMcpServer() {
 
 // ── HTTP ─────────────────────────────────────────────────────────────────────
 const app = express();
-app.use(express.json());
+app.use(express.json({ limit: '25mb' })); // 25mb: mídia em base64 (16MB + overhead) cabe no corpo
 
 // /health é público de propósito (monitor externo via curl, sem segredo). Inclui a
 // observabilidade completa do canal para uptime checks saberem se está entregando.

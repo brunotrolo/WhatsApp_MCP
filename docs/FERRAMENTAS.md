@@ -43,6 +43,12 @@ sudo systemctl restart whatsapp-mcp
 > ⚠️ Cada capacidade "bot-like" a mais aumenta o risco de banimento da conexão não-oficial.
 > Para um canal pessoal de alertas, mantenha só o necessário ligado.
 
+## Limites e robustez de mídia
+- Tamanho máximo por mídia: **16MB** (base64 ou baixada de URL). Acima disso, retorna erro.
+- Timeouts: download de URL **20s**, upload ao WhatsApp **45s**. Se estourar, retorna erro em vez
+  de **pendurar** a requisição (o hang de mídia sem timeout travava o chat do orquestrador).
+- Corpo da requisição aceita até **25MB** (para mídia em base64).
+
 ## Formato de resposta (envios)
 ```json
 { "resultado": "ENTREGUE no aparelho do destinatário.", "entregue": true, "status": "entregue", "id": "3EB0..." }
