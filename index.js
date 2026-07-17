@@ -69,6 +69,10 @@ async function startBaileys() {
 
     if (connection === 'close') {
       const statusCode = lastDisconnect?.error?.output?.statusCode;
+      // Log completo do erro — para diagnosticar 405 (versão velha vs bloqueio de
+      // IP de datacenter). Um 405 persistente mesmo com pacote/versão atuais indica
+      // que o WhatsApp está recusando o IP da VM (comum em nuvem/GCP/AWS).
+      console.log('DEBUG close:', JSON.stringify(lastDisconnect?.error?.output ?? { message: lastDisconnect?.error?.message }));
       const deslogado = statusCode === DisconnectReason.loggedOut;
       if (deslogado) {
         connectionStatus = 'deslogado_precisa_novo_qr';
