@@ -118,9 +118,15 @@ async function startBaileys() {
     if (type !== 'notify') return;
     for (const m of messages) {
       if (m.key?.fromMe) continue;
+      const id = m.key?.id;
       const texto = m.message?.conversation ?? m.message?.extendedTextMessage?.text;
-      if (!texto) continue; // só texto por ora (mídia recebida fica de fora)
-      inbox.push({ from: m.key.remoteJid, texto, at: Date.now(), id: m.key.id, key: m.key, quotedRef: { key: m.key, message: m.message } });
+      if (!texto || !id) continue; // só texto por ora (mídia recebida fica de fora)
+      // DEDUP por id: o messages.upsert pode disparar mais de uma vez para a mesma
+      // mensagem (retry/entrega dupla do Baileys) — sem isto o buffer acumulava a
+      // mesma mensagem 2x com o mesmo id. Usa o timestamp REAL da mensagem quando disponível.
+      if (inbox.some((e) => e.id === id)) continue;
+      const at = m.messageTimestamp ? Number(m.messageTimestamp) * 1000 : Date.now();
+      inbox.push({ from: m.key.remoteJid, texto, at, id, key: m.key, quotedRef: { key: m.key, message: m.message } });
       if (inbox.length > MAX_INBOX) inbox.shift();
     }
   });
