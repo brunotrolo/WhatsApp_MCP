@@ -7,9 +7,18 @@ sem Postgres, sem Redis), rodando numa VM Compute Engine `e2-micro` sempre ligad
 (Always Free tier do Google Cloud — custo ~R$0/mês).
 
 > **Por que VM e não Cloud Run?** A sessão WhatsApp Web exige um WebSocket persistente;
-> o Cloud Run congela a CPU do container entre requisições. Estudo completo e histórico
-> de decisões no repo [GoogleCloud_Projects](https://github.com/brunotrolo/GoogleCloud_Projects)
-> (`docs/estudo-viabilidade-mcp-whatsapp.md` e `docs/whatsapp-mcp-arquitetura.md`).
+> o Cloud Run congela a CPU do container entre requisições. Ver [`docs/ARQUITETURA.md`](docs/ARQUITETURA.md).
+
+## 📚 Documentação
+
+| Documento | Conteúdo |
+|---|---|
+| [`docs/ARQUITETURA.md`](docs/ARQUITETURA.md) | Arquitetura no Google Cloud (VM e2-micro, Caddy+sslip.io, IP estático, systemd), auth, deploy e custo. |
+| [`docs/FERRAMENTAS.md`](docs/FERRAMENTAS.md) | As 15 ferramentas MCP em detalhe (parâmetros, recomendadas × extras, confirmação de entrega). |
+| [`docs/TROUBLESHOOTING.md`](docs/TROUBLESHOOTING.md) | A saga de bugs e seus fixes (405, git ownership, 9º dígito, OAuth, timing de deploy…). |
+
+Contexto do ecossistema (os 3 MCPs, estudo de viabilidade, monitoria de custos):
+repo [GoogleCloud_Projects](https://github.com/brunotrolo/GoogleCloud_Projects).
 
 ## Ferramentas
 
