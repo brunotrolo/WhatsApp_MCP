@@ -546,6 +546,22 @@ app.use(express.json({ limit: '25mb' })); // 25mb: mídia em base64 (16MB + over
 // observabilidade completa do canal para uptime checks saberem se está entregando.
 app.get('/health', (_req, res) => res.json({ status: 'ok', ...statusConexao() }));
 
+// Ícone do conector (favicon). O claude.ai deriva o ícone do conector custom a
+// partir do favicon servido no host da URL. Servimos o ícone do WhatsApp para
+// dar identidade visual ao conector.
+const FAVICON_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><rect width="32" height="32" rx="7" fill="#25D366"/><path fill="#fff" d="M16 6.5c-5.2 0-9.5 4.2-9.5 9.4 0 1.7.5 3.3 1.3 4.7L6.5 25.5l5.1-1.3c1.3.7 2.8 1.1 4.4 1.1 5.2 0 9.5-4.2 9.5-9.4S21.2 6.5 16 6.5zm5.5 13.3c-.2.6-1.3 1.2-1.8 1.2-.5.1-1 .1-1.7-.1-.4-.1-.9-.3-1.6-.6-2.7-1.2-4.5-4-4.6-4.2-.1-.2-1.1-1.4-1.1-2.7 0-1.3.7-1.9.9-2.2.2-.2.5-.3.7-.3h.5c.2 0 .4 0 .6.5.2.6.8 2 .9 2.1.1.1.1.3 0 .5-.1.2-.1.3-.3.5l-.4.5c-.1.1-.3.3-.1.6.2.3.7 1.2 1.6 2 1.1.9 2 1.2 2.3 1.4.3.1.5.1.6-.1.2-.2.7-.8.9-1.1.2-.3.4-.2.6-.1.2.1 1.5.7 1.7.9.2.1.4.1.4.2.1.2.1.6-.1 1.1z"/></svg>`;
+function serveFavicon(_req, res) {
+  res.set('Content-Type', 'image/svg+xml');
+  res.set('Cache-Control', 'public, max-age=86400');
+  res.send(FAVICON_SVG);
+}
+app.get('/favicon.svg', serveFavicon);
+app.get('/favicon.ico', serveFavicon);
+app.get('/', (_req, res) => {
+  res.set('Content-Type', 'text/html; charset=utf-8');
+  res.send(`<!doctype html><html><head><meta charset="utf-8"><title>WhatsApp MCP</title><link rel="icon" type="image/svg+xml" href="/favicon.svg"></head><body style="font-family:sans-serif"><h1>WhatsApp MCP</h1><p>Servidor MCP de alertas no WhatsApp. Endpoint: <code>/mcp/&lt;chave&gt;</code></p></body></html>`);
+});
+
 async function handleMcp(req, res) {
   const server = buildMcpServer();
   const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
