@@ -340,14 +340,23 @@ const GUIA = {
     obs: 'Requer GOOGLE_TTS_API_KEY no servidor; se a ferramenta não aparece, a chave não está configurada.',
   },
   imagem: {
-    quando: 'Enviar um gráfico (payoff de trava, curva de capital, IV Rank, print do cockpit).',
-    como: 'Forneça `url` (link público) OU `base64` (se VOCÊ gerou a imagem). `legenda` opcional. Máx 16MB.',
-    exemplo: { name: 'enviar_imagem_whatsapp', arguments: { base64: '<png/jpeg em base64>', legenda: 'Payoff da trava BBDC4' } },
+    quando: 'Enviar um gráfico ou dashboard como IMAGEM de verdade (payoff de trava, curva de capital, IV Rank, dashboard de custos, print do cockpit).',
+    ferramenta_correta: 'enviar_imagem_whatsapp — ELA EXISTE e é uma ferramenta recomendada (sempre ativa). Se você "não a vê", ela está DESABILITADA nas permissões do conector no claude.ai; peça ao operador para permiti-la. NÃO conclua que "não dá para mandar imagem".',
+    passo_a_passo_imagem_gerada_por_voce: [
+      '1. GERE a imagem (ex.: renderize o dashboard/gráfico como PNG ou JPEG) usando sua ferramenta de código/análise.',
+      '2. CODIFIQUE o arquivo em base64 (a string do conteúdo, com ou sem o prefixo data:image/...;base64,). Limite 16MB.',
+      '3. CHAME enviar_imagem_whatsapp com { base64: "<...>", legenda: "..." }. O operador recebe a IMAGEM aberta no app.',
+      '4. Confira o retorno { entregue, status, id }. entregue=false ⇒ destino offline: reenvie depois.',
+    ],
+    nao_faca: 'NÃO hospede a imagem e mande um LINK/URL como texto — o pedido é uma imagem no WhatsApp, não um link. Só use o parâmetro `url` quando a imagem JÁ está publicamente hospedada e o operador aceitou isso; para algo que VOCÊ gerou, use SEMPRE `base64`.',
+    como: 'Prefira `base64` (conteúdo que VOCÊ gerou). `url` só para imagem já hospedada publicamente. `legenda` opcional. Máx 16MB.',
+    exemplo: { name: 'enviar_imagem_whatsapp', arguments: { base64: '<png/jpeg em base64>', legenda: 'Dashboard de custos — jul/2026' } },
   },
   documento: {
-    quando: 'Enviar relatório/planilha (PDF, CSV, XLSX).',
-    como: 'Forneça `url` OU `base64`, e SEMPRE `nome_arquivo` com extensão. `legenda` opcional.',
-    exemplo: { name: 'enviar_documento_whatsapp', arguments: { url: 'https://.../relatorio.pdf', nome_arquivo: 'relatorio-mensal.pdf' } },
+    quando: 'Enviar relatório/planilha como ARQUIVO (PDF, CSV, XLSX).',
+    como: 'Se VOCÊ gerou o arquivo, use `base64` (não hospede e mande link). `url` só para arquivo já público. SEMPRE `nome_arquivo` com extensão. `legenda` opcional.',
+    nao_faca: 'NÃO mande um LINK como texto quando o operador pediu o arquivo: gere e envie o conteúdo via `base64`.',
+    exemplo: { name: 'enviar_documento_whatsapp', arguments: { base64: '<pdf/csv em base64>', nome_arquivo: 'relatorio-mensal.pdf', legenda: 'P&L de julho' } },
   },
   receber: {
     quando: 'Two-way: o operador responde no WhatsApp e você lê e age.',
@@ -381,7 +390,7 @@ const TOOLS = [
   },
   {
     name: 'enviar_imagem_whatsapp', extra: false,
-    description: 'Envia uma IMAGEM (via url ou base64) com legenda opcional. Ideal para gráficos: payoff de trava, curva de capital, IV Rank, print do cockpit. CONFIRMA A ENTREGA.',
+    description: 'Envia uma IMAGEM de verdade para o WhatsApp (gráfico, dashboard, payoff, curva de capital, IV Rank, print do cockpit). Se VOCÊ gerou a imagem, passe `base64` (PNG/JPEG, até 16MB) — NÃO hospede em site e mande link. Use `url` só para imagem já pública. `legenda` opcional. CONFIRMA A ENTREGA { entregue, status, id }. Veja guia_de_uso("imagem").',
     inputSchema: { type: 'object', properties: { ...MIDIA_PROPS, legenda: { type: 'string', description: 'Legenda opcional.' } } },
     handler: async (a) => respEnvio(await enviarConteudo({ image: await midiaBuffer(a), caption: a.legenda || undefined }, a.legenda || 'imagem'), 'Imagem'),
   },

@@ -13,8 +13,10 @@ independe de recibos de leitura; o `lido` é best-effort.
 | Ferramenta | Parâmetros | O que faz |
 |---|---|---|
 | `enviar_mensagem_whatsapp` | `texto` | Texto (aceita markdown do WhatsApp: `*negrito*`, `_itálico_`, ` ```mono``` `). |
-| `enviar_imagem_whatsapp` | `url` \| `base64`, `legenda?` | Imagem — gráficos de payoff, curva de capital, IV Rank, print do cockpit. |
-| `enviar_documento_whatsapp` | `url` \| `base64`, `nome_arquivo`, `mimetype?`, `legenda?` | PDF/CSV/XLSX — relatórios, auditoria, posições. |
+| `enviar_imagem_whatsapp` | `url` \| `base64`, `legenda?` | Imagem — gráficos de payoff, curva de capital, IV Rank, **dashboard**, print do cockpit. **Imagem que a IA gerou → `base64` (não hospedar e mandar link).** |
+| `enviar_documento_whatsapp` | `url` \| `base64`, `nome_arquivo`, `mimetype?`, `legenda?` | PDF/CSV/XLSX — relatórios, auditoria, posições. **Arquivo gerado pela IA → `base64`.** |
+
+> **Enviar um gráfico/dashboard como IMAGEM (não link):** a IA (1) gera a imagem em PNG/JPEG, (2) codifica em `base64`, (3) chama `enviar_imagem_whatsapp` com `{ base64, legenda }`. A ferramenta **existe e é recomendada** — se a IA "não a vê", ela está desabilitada nas permissões do conector no claude.ai. Ver `guia_de_uso("imagem")`.
 | `ler_mensagens_recebidas` | `limite?` | **Two-way:** lê as mensagens de texto recebidas pelo robô (o operador comanda pelo WhatsApp; o assistente lê e age). |
 | `verificar_status_envio` | `id` | Reconfere entrega/leitura de um envio anterior pelo `id`. |
 | `verificar_status_conexao` | — | Observabilidade: online?, desde quando, uptime, última entrega confirmada. |
