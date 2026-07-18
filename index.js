@@ -342,14 +342,16 @@ const GUIA = {
   imagem: {
     quando: 'Enviar um gráfico ou dashboard como IMAGEM de verdade (payoff de trava, curva de capital, IV Rank, dashboard de custos, print do cockpit).',
     ferramenta_correta: 'enviar_imagem_whatsapp — ELA EXISTE e é uma ferramenta recomendada (sempre ativa). Se você "não a vê", ela está DESABILITADA nas permissões do conector no claude.ai; peça ao operador para permiti-la. NÃO conclua que "não dá para mandar imagem".',
+    REGRA_DE_OURO_TAMANHO: 'Ao usar `base64`, VOCÊ tem de emitir a string INTEIRA na chamada — uma imagem de 33KB vira ~45.000 caracteres. Emitir isso é LENTO e, se truncar no meio, o WhatsApp entrega um PNG QUEBRADO (o status "entregue" NÃO valida integridade dos bytes). Por isso: GERE A IMAGEM PEQUENA DE PROPÓSITO. Alvo: arquivo ≤ 8KB (base64 < ~11.000 chars). Como: JPEG (não PNG), largura ≤ 700px, qualidade ~70, sem antialias pesado, poucas cores. Um dashboard glanceável (KPIs + barras) cabe nisso.',
     passo_a_passo_imagem_gerada_por_voce: [
-      '1. GERE a imagem (ex.: renderize o dashboard/gráfico como PNG ou JPEG) usando sua ferramenta de código/análise.',
-      '2. CODIFIQUE o arquivo em base64 (a string do conteúdo, com ou sem o prefixo data:image/...;base64,). Limite 16MB.',
-      '3. CHAME enviar_imagem_whatsapp com { base64: "<...>", legenda: "..." }. O operador recebe a IMAGEM aberta no app.',
-      '4. Confira o retorno { entregue, status, id }. entregue=false ⇒ destino offline: reenvie depois.',
+      '1. GERE a imagem PEQUENA: JPEG, largura ≤ 700px, qualidade ~70. Cheque o tamanho do arquivo. Se passar de ~8KB, reduza dimensão/qualidade e regenere ANTES de enviar.',
+      '2. CODIFIQUE em base64 (com ou sem prefixo data:image/...;base64,).',
+      '3. NUNCA divida, resuma, "reticencie" (...) nem transcreva a string na mão. Passe o base64 COMPLETO, de uma vez, direto do arquivo gerado. Se a string é grande demais para emitir com segurança, a imagem está grande demais — volte ao passo 1 e diminua.',
+      '4. CHAME enviar_imagem_whatsapp com { base64: "<completo>", legenda: "..." }.',
+      '5. Confira o retorno { entregue, status, id }. entregue=false ⇒ destino offline: reenvie depois. (Se a imagem chegar visualmente quebrada, o base64 foi truncado no envio: reduza o tamanho e refaça.)',
     ],
-    nao_faca: 'NÃO hospede a imagem e mande um LINK/URL como texto — o pedido é uma imagem no WhatsApp, não um link. Só use o parâmetro `url` quando a imagem JÁ está publicamente hospedada e o operador aceitou isso; para algo que VOCÊ gerou, use SEMPRE `base64`.',
-    como: 'Prefira `base64` (conteúdo que VOCÊ gerou). `url` só para imagem já hospedada publicamente. `legenda` opcional. Máx 16MB.',
+    nao_faca: 'NÃO hospede a imagem e mande um LINK/URL como texto (o pedido é imagem, não link). NÃO tente enviar uma imagem grande "na força" repartindo o base64. Se você gerou a imagem, use `base64` COMPLETO de um arquivo PEQUENO; `url` só para imagem que JÁ está publicamente hospedada.',
+    como: 'Prefira `base64` (conteúdo que VOCÊ gerou), mas GERE PEQUENO (≤8KB, JPEG). `url` só para imagem já hospedada publicamente. `legenda` opcional. Máx 16MB (mas mire em KBs, não MBs).',
     exemplo: { name: 'enviar_imagem_whatsapp', arguments: { base64: '<png/jpeg em base64>', legenda: 'Dashboard de custos — jul/2026' } },
   },
   documento: {
@@ -368,7 +370,7 @@ const GUIA = {
   },
   boas_praticas: [
     'Não repita alertas em excesso — é conexão não-oficial e volume alto aumenta risco de banimento.',
-    'Para gráficos gerados por você, prefira `base64` (evita depender de hospedar a imagem).',
+    'Para gráficos gerados por você, prefira `base64` — MAS gere a imagem PEQUENA (JPEG, ≤700px, ≤8KB). Emitir base64 gigante é lento e trunca (imagem quebrada). Nunca reparta/transcreva o base64 na mão.',
     'Áudio como nota de voz: use enviar_audio_whatsapp com nota_de_voz=true (o servidor transcodifica p/ opus).',
     'Se um envio falhar, a resposta traz um campo "erro" claro — leia e ajuste (URL ruim, mídia grande, etc.).',
   ],
@@ -390,7 +392,7 @@ const TOOLS = [
   },
   {
     name: 'enviar_imagem_whatsapp', extra: false,
-    description: 'Envia uma IMAGEM de verdade para o WhatsApp (gráfico, dashboard, payoff, curva de capital, IV Rank, print do cockpit). Se VOCÊ gerou a imagem, passe `base64` (PNG/JPEG, até 16MB) — NÃO hospede em site e mande link. Use `url` só para imagem já pública. `legenda` opcional. CONFIRMA A ENTREGA { entregue, status, id }. Veja guia_de_uso("imagem").',
+    description: 'Envia uma IMAGEM de verdade para o WhatsApp (gráfico, dashboard, payoff, curva de capital, IV Rank, print do cockpit). Se VOCÊ gerou a imagem, passe `base64` — mas GERE PEQUENO (JPEG, largura ≤700px, alvo ≤8KB): emitir base64 gigante é lento e pode truncar, chegando quebrado. NUNCA reparta/transcreva o base64 na mão. NÃO hospede em site e mande link. Use `url` só para imagem já pública. `legenda` opcional. CONFIRMA A ENTREGA { entregue, status, id }. Veja guia_de_uso("imagem").',
     inputSchema: { type: 'object', properties: { ...MIDIA_PROPS, legenda: { type: 'string', description: 'Legenda opcional.' } } },
     handler: async (a) => respEnvio(await enviarConteudo({ image: await midiaBuffer(a), caption: a.legenda || undefined }, a.legenda || 'imagem'), 'Imagem'),
   },
