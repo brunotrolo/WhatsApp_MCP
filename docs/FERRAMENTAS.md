@@ -33,8 +33,8 @@ gcloud services api-keys create --display-name=whatsapp-tts \
 gcloud compute ssh whatsapp-mcp-vm --project=$PROJ --zone=us-east1-b \
   --command="echo 'GOOGLE_TTS_API_KEY=<KEY_STRING>' | sudo tee -a /etc/systemd/system/whatsapp-mcp.env && sudo systemctl restart whatsapp-mcp"
 ```
-Voz padrão `pt-BR-Neural2-C` (feminina); alternativas: `pt-BR-Neural2-B` (masculina), `pt-BR-Wavenet-A`.
-Free tier do TTS: ~1M caracteres/mês (Neural) → alertas curtos ficam em ~R$0.
+Voz padrão `pt-BR-Chirp3-HD-Charon` (masculina grave, HD — a mais natural); alternativas: `pt-BR-Neural2-C` (feminina), `pt-BR-Neural2-B` (masculina neutra), `pt-BR-Wavenet-B`.
+Free tier do TTS: ~1M caracteres/mês → alertas curtos ficam em ~R$0.
 
 ## Extras (desligadas por padrão — `HABILITAR_FERRAMENTAS_EXTRAS=true`)
 

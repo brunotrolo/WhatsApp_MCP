@@ -279,7 +279,7 @@ function transcodeParaOpus(buffer) {
 // Text-to-Speech via Google Cloud TTS (voz Neural pt-BR). Autentica por API KEY
 // (env GOOGLE_TTS_API_KEY) — a VM não tem escopo cloud-platform para usar a service
 // account direto. Retorna Buffer mp3. Free tier ~1M chars/mês (Neural).
-const TTS_VOZ_PADRAO = 'pt-BR-Neural2-C';
+const TTS_VOZ_PADRAO = 'pt-BR-Chirp3-HD-Charon';
 async function sintetizarTTS(texto, voz, apiKey) {
   const body = { input: { text: texto }, voice: { languageCode: 'pt-BR', name: voz || TTS_VOZ_PADRAO }, audioConfig: { audioEncoding: 'MP3' } };
   const ctrl = new AbortController();
@@ -335,7 +335,7 @@ const GUIA = {
   ],
   alerta_falado: {
     quando: 'Alerta que o operador deve OUVIR sem abrir o app (ex: risco de carteira, limite cruzado).',
-    como: 'Passe só `texto` (pt-BR). Frases curtas soam melhor. `voz` opcional (padrão pt-BR-Neural2-C feminina; pt-BR-Neural2-B masculina).',
+    como: 'Passe só `texto` (pt-BR). Frases curtas soam melhor. `voz` opcional (padrão pt-BR-Chirp3-HD-Charon, masculina grave HD; ex.: pt-BR-Neural2-C feminina).',
     exemplo: { name: 'enviar_alerta_falado', arguments: { texto: 'Atenção: EGIE3 cruzou o limite de delta. Reveja a posição.' } },
     obs: 'Requer GOOGLE_TTS_API_KEY no servidor; se a ferramenta não aparece, a chave não está configurada.',
   },
@@ -431,7 +431,7 @@ const TOOLS = [
     description: 'Envia um ALERTA FALADO: recebe o TEXTO, gera a fala com voz humana (Google Cloud TTS, pt-BR Neural) e envia como NOTA DE VOZ no WhatsApp. O operador ouve o alerta sem abrir o app. CONFIRMA A ENTREGA. Ideal para risco de carteira/limite cruzado.',
     inputSchema: { type: 'object', properties: {
       texto: { type: 'string', description: 'O que será falado (pt-BR). Frases curtas soam melhor.' },
-      voz: { type: 'string', description: 'Voz do TTS (padrão pt-BR-Neural2-C, feminina). Ex.: pt-BR-Neural2-B (masculina).' },
+      voz: { type: 'string', description: 'Voz do TTS (padrão pt-BR-Chirp3-HD-Charon, masculina grave HD). Ex.: pt-BR-Neural2-C (feminina), pt-BR-Neural2-B (masculina neutra).' },
     }, required: ['texto'] },
     valida: (a) => { if (!String(a.texto ?? '').trim()) throw new Error("'texto' é obrigatório."); },
     handler: async (a) => {
